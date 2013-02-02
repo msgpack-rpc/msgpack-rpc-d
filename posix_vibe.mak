@@ -129,16 +129,8 @@ SRCS  = \
 	src/vibe/crypto/passwordhash.d \
 	src/vibe/crypto/sha1.d \
 	src/vibe/crypto/ssl.d \
-	src/vibe/data/bson.d \
 	src/vibe/data/json.d \
 	src/vibe/data/utils.d \
-	src/vibe/db/mongo/client.d \
-	src/vibe/db/mongo/collection.d \
-	src/vibe/db/mongo/connection.d \
-	src/vibe/db/mongo/cursor.d \
-	src/vibe/db/mongo/database.d \
-	src/vibe/db/mongo/mongo.d \
-	src/vibe/db/redis/redis.d \
 	src/vibe/http/auth/basic_auth.d \
 	src/vibe/http/client.d \
 	src/vibe/http/common.d \
@@ -176,12 +168,6 @@ SRCS  = \
 	src/vibe/utils/string.d \
 	src/vibe/utils/validation.d \
 	src/vibe/vibe.d \
-	src/vibe/vpm/dependency.d \
-	src/vibe/vpm/installation.d \
-	src/vibe/vpm/packagesupplier.d \
-	src/vibe/vpm/registry.d \
-	src/vibe/vpm/utils.d \
-	src/vibe/vpm/vpm.d \
 
 target: $(LIB)
 
