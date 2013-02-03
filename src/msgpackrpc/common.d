@@ -27,44 +27,70 @@ alias Tuple!(ushort, "port", string, "address") Endpoint;
  */
 class RPCError : Exception
 {
-    static immutable code = ".RPCError";
+    enum Code = ".RPCError";
+
+    static void rethrow(ref Value error)
+    {
+        if (error.type == Value.type.array) {
+            auto errCode = error.via.array[0].as!string;
+            auto errMsg = error.via.array[1].as!string;
+
+            switch (errCode) {
+            case RPCError.Code:
+                throw new RPCError(errMsg);
+            case TimeoutError.Code:
+                throw new TimeoutError(errMsg);
+            case TransportError.Code:
+                throw new TransportError(errMsg);
+            case CallError.Code:
+                throw new CallError(errMsg);
+            case NoMethodError.Code:
+                throw new NoMethodError(errMsg);
+            case ArgumentError.Code:
+                throw new ArgumentError(errMsg);
+            default:
+                throw new Exception("Unknown code: code = " ~ errCode);
+            }
+        } else {
+            throw new RPCError(error.as!string);
+        }
+    }
 
     mixin ErrorConstructor;
-    mixin MessagePackable!("msg");
 }
 
 ///
 class TimeoutError : RPCError
 {
-    static immutable code = ".TimeoutError";
+    enum Code = ".TimeoutError";
     mixin ErrorConstructor;
 }
 
 ///
 class TransportError : RPCError
 {
-    static immutable code = ".TransportError";
+    enum Code = ".TransportError";
     mixin ErrorConstructor;
 }
 
 ///
 class CallError : RPCError
 {
-    static immutable code = ".NoMethodError";
+    enum Code = ".NoMethodError";
     mixin ErrorConstructor;
 }
 
 ///
 class NoMethodError : CallError
 {
-    static immutable code = ".CallError.NoMethodError";
+    enum Code = ".CallError.NoMethodError";
     mixin ErrorConstructor;
 }
 
 ///
 class ArgumentError : CallError
 {
-    static immutable code = ".CallError.ArgumentError";
+    enum Code = ".CallError.ArgumentError";
     mixin ErrorConstructor;
 }
 
@@ -75,5 +101,24 @@ mixin template ErrorConstructor()
     @safe pure nothrow this(string msg)
     {
         super(msg);
+    }
+
+    void toMsgpack(Packer)(ref Packer packer, bool withFieldName = false) const
+    {
+        packer.beginArray(2);
+        packer.pack(Code);
+        packer.pack(msg);
+    }
+}
+
+unittest
+{
+    import std.typetuple;
+
+    foreach (Error; TypeTuple!(RPCError, TimeoutError, TransportError, CallError, NoMethodError, ArgumentError)) {
+        auto e = new Error("hoge");
+        string[] codeAndMsg;
+        unpack(pack(e), codeAndMsg);
+        assert(codeAndMsg[0] == Error.Code);
     }
 }

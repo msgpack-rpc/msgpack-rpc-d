@@ -11,7 +11,7 @@ import msgpackrpc.server;
 import msgpack;
 import vibe.vibe;
 
-
+size_t num = 0;
 abstract class BaseSocket
 {
   private:
@@ -23,6 +23,11 @@ abstract class BaseSocket
     {
         _connection = connection;
         _unpacker = StreamingUnpacker([], 2048);
+    }
+
+    void close()
+    {
+        _connection.close();
     }
 
     void sendResponse(Args...)(const Args args)
@@ -50,12 +55,15 @@ abstract class BaseSocket
         InputStream input = _connection;
 
         do {
-            ubyte[] data = new ubyte[](input.leastSize);
+            auto size = input.leastSize;
+            if (size > 0) {
+                ubyte[] data = new ubyte[](size);
 
-            input.read(data);
-            proccessRequest(data);
-            if (!_connection.waitForData(dur!"seconds"(10)))
-                break;
+                input.read(data);
+                proccessRequest(data);
+                //if (!_connection.waitForData(dur!"seconds"(10)))
+                //    break;
+            }
         } while (_connection.connected);
     }
 
@@ -89,6 +97,71 @@ abstract class BaseSocket
                 throw new RPCError("Unknown message type: type = " ~ to!string(type));
             }
         }
+    }
+}
+
+
+class ClientSocket(Client) : BaseSocket
+{
+  private:
+    Client _client;
+
+  public:
+    this(TcpConnection connection, Client client)
+    {
+        super(connection);
+        _client = client;
+    }
+
+    override void onRead()
+    {
+        InputStream input = _connection;
+
+        do {
+            //if (!input.dataAvailableForRead)
+            //    return;
+
+            ubyte[] data = new ubyte[](input.leastSize);
+            input.read(data);
+            proccessRequest(data);
+            break;
+        } while (_connection.connected);
+    }
+
+    override void onResponse(size_t id, Value error, Value result)
+    {
+        _client.onResponse(id, error, result);
+    }
+}
+
+
+final class ClientTransport(Client)
+{
+  private:
+    Endpoint _endpoint;
+    Client _client;
+    ClientSocket!Client _socket;
+
+  public:
+    this(Client client, Endpoint endpoint)
+    {
+        _client = client;
+        _endpoint = endpoint;
+        _socket = new ClientSocket!Client(connectTcp(_endpoint.address, _endpoint.port), client);
+    }
+
+    void sendMessage(ubyte[] message, bool request = true)
+    {
+        _socket.sendMessage(message);
+        if (request)
+            _socket.onRead();
+        else
+            getEventDriver().processEvents();  // force notify event to send
+    }
+
+    void close()
+    {
+        _socket.close();
     }
 }
 
