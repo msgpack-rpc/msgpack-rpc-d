@@ -96,10 +96,15 @@ alias Client!(msgpackrpc.transport.tcp) TCPClient;
  */
 class Future
 {
+    alias void delegate(Future) Callback;
+
+  private:
     Value _value;
+    Callback _callback;
     bool _err;
     bool _yet = true;
 
+  public:
     void join()
     {
         while (_yet)
@@ -110,6 +115,11 @@ class Future
     T get(T = Value)()
     {
         join();
+
+        if (_err) {
+            RPCException.rethrow(_value);
+            return T.init;
+        }
 
         static if (is(T : Value))
         {
@@ -123,27 +133,43 @@ class Future
 
     @property
     {
-        Value result()
+        ref Value result()
         {
             return _value;
         }
 
-        void result(Value res)
+        void result(ref Value res)
         {
             _yet = false;
             _value = res;
+
+            if (_callback !is null)
+                _callback(this);
         }
 
-        Value error()
+        bool errorOccurred()
+        {
+            return _err;
+        }
+
+        ref Value error()
         {
             return _value;
         }
 
-        void error(Value err)
+        void error(ref Value err)
         {
             _yet = false;
             _err = true;
             _value = err;
+
+            if (_callback !is null)
+                _callback(this);
+        }
+
+        void callback(Callback callback)
+        {
+            _callback = callback;
         }
     }
 }
