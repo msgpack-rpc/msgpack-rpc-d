@@ -150,7 +150,6 @@ SRCS  = \
 	src/vibe/inet/path.d \
 	src/vibe/inet/url.d \
 	src/vibe/inet/urltransfer.d \
-	src/vibe/mail/smtp.d \
 	src/vibe/stream/base64.d \
 	src/vibe/stream/counting.d \
 	src/vibe/stream/memory.d \

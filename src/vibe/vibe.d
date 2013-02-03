@@ -34,7 +34,6 @@ public import vibe.http.websockets;
 public import vibe.inet.message;
 public import vibe.inet.url;
 public import vibe.inet.urltransfer;
-public import vibe.mail.smtp;
 //public import vibe.stream.base64;
 public import vibe.stream.counting;
 public import vibe.stream.memory;
