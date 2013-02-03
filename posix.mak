@@ -5,17 +5,20 @@ ifeq (,$(DMD))
 	DMD := dmd
 endif
 
-LIB     = libvibed.a
+LIB     = libmsgpackrpcd.a
 DFLAGS  = -Isrc -m$(MODEL) -w -d -property
 
 ifeq ($(BUILD),debug)
 	DFLAGS += -g -debug
 else
-	DFLAGS += -O -release -nofloat -inline
+	DFLAGS += -O -release -nofloat -inline # -noboundscheck # dmd has a optimization bug
+endif
+
+ifeq ($(EnableReal),true)
+	DFLAGS += -version=EnableReal
 endif
 
 SRCS  = \
-	src/deimos/ev.d \
 	src/deimos/event2/_d_util.d \
 	src/deimos/event2/_tailq.d \
 	src/deimos/event2/buffer.d \
@@ -167,6 +170,12 @@ SRCS  = \
 	src/vibe/utils/string.d \
 	src/vibe/utils/validation.d \
 	src/vibe/vibe.d \
+	src/msgpack.d \
+	src/msgpackrpc/common.d \
+	src/msgpackrpc/client.d \
+	src/msgpackrpc/server.d \
+	src/msgpackrpc/transport/tcp.d \
+	src/msgpackrpc/transport/udp.d \
 
 target: $(LIB)
 
@@ -174,4 +183,14 @@ $(LIB):
 	$(DMD) $(DFLAGS) -lib -of$(LIB) $(SRCS)
 
 clean:
-	rm -rf $(LIB)
+	rm -rf $(addprefix $(DOCDIR)/, $(DOCS)) $(LIB)
+
+MAIN_FILE = "empty_msgpackrpc_unittest.d"
+
+unittest:
+	echo 'import msgpackrpc.server; void main(){}' > $(MAIN_FILE)
+	$(DMD) $(DFLAGS) -unittest -of$(LIB) $(SRCS) -run $(MAIN_FILE)
+	rm $(MAIN_FILE)
+
+run_examples:
+	echo example/* | xargs -n 1 dmd $(DFLAGS) $(SRCS) -Isrc -run
