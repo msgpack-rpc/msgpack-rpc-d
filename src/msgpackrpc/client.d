@@ -16,12 +16,12 @@ import std.traits;
 
 
 /**
- * MessagePack RPC Server serves Object or module based dispacher
+ * MessagePack RPC Client
  */
-class Client
+class Client(alias Protocol)
 {
   private:
-    alias ClientTransport!(typeof(this)) Transport;
+    alias Protocol.ClientTransport!(typeof(this)) Transport;
 
     Transport _transport;
     IDGenerater _generator;
@@ -89,6 +89,11 @@ class Client
     }
 }
 
+alias Client!(msgpackrpc.transport.tcp) TCPClient;
+
+/**
+ * Compose the future value
+ */
 class Future
 {
     Value _value;

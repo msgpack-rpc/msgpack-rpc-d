@@ -6,7 +6,6 @@
 module msgpackrpc.server;
 
 public import msgpackrpc.common;
-import msgpackrpc.transport.tcp;
 
 import msgpack;
 import vibe.vibe;
@@ -17,7 +16,7 @@ import std.traits;
 /**
  * MessagePack RPC Server serves Object or module based dispacher
  */
-class Server(alias T, alias Protocol = msgpackrpc.transport.tcp)
+class Server(alias T, alias Protocol)
 {
   private:
     enum ModuleDispatcher = T.stringof.startsWith("module ");
@@ -94,6 +93,21 @@ class Server(alias T, alias Protocol = msgpackrpc.transport.tcp)
 
         return result;
     }
+}
+
+
+template TCPServer(alias T)
+{
+    import msgpackrpc.transport.tcp;
+
+    alias Server!(T, msgpackrpc.transport.tcp) TCPServer;
+}
+
+template UDPServer(alias T)
+{
+    import msgpackrpc.transport.udp;
+
+    alias Server!(T, msgpackrpc.transport.udp) UDPServer;
 }
 
 private:

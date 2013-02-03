@@ -7,7 +7,7 @@ MessagePack RPC implementation based on [vibe.d](http://vibed.org)
 ## Client
 
 ```d
-auto client = new Client(Endpoint(cast(ushort)18500, "127.0.0.1"));
+auto client = new TCPClient(Endpoint(cast(ushort)18500, "127.0.0.1"));
 
 // sync request
 auto num = client.call!ulong("sum", 1, 2);
@@ -37,7 +37,8 @@ class FooServer
     }
 }
 
-auto server = new Server!(HelloServer)(new HelloServer);
+// TCPServer or UDPServer
+auto server = new TCPServer!(HelloServer)(new HelloServer);
 server.listen(Endpoint(18800, "127.0.0.1"));
 server.start();
 ```
@@ -59,14 +60,6 @@ void hello(string msg)
 
 auto server = new Server!(foo)();
 // same as Object
-```
-
-#### Using UDP
-
-Specify the second template parameter.
-
-```d
-auto server = new Server!(HelloServer, msgpackrpc.transport.udp)(new HelloServer);
 ```
 
 # Link
