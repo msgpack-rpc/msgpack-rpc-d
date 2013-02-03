@@ -5,7 +5,7 @@
  */
 module msgpackrpc.client;
 
-import msgpackrpc.common;
+public import msgpackrpc.common;
 import msgpackrpc.transport.tcp;
 
 import msgpack;

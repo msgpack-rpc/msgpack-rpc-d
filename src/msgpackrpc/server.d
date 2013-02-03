@@ -5,7 +5,7 @@
  */
 module msgpackrpc.server;
 
-import msgpackrpc.common;
+public import msgpackrpc.common;
 import msgpackrpc.transport.tcp;
 
 import msgpack;
@@ -38,9 +38,9 @@ class Server(alias T, alias Protocol = msgpackrpc.transport.tcp)
         }
     }
 
-    void listen(ushort port, string address)
+    void listen(Endpoint endpoint)
     {
-        auto transport = new Transport(Endpoint(port, address));
+        auto transport = new Transport(endpoint);
         transport.listen(this);
         _transports ~= transport;
     }

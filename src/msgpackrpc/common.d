@@ -7,8 +7,6 @@ module msgpackrpc.common;
 
 import msgpack;
 
-import std.typecons;
-
 
 /**
  * See: http://wiki.msgpack.org/display/MSGPACK/RPC+specification#RPCspecification-MessagePackRPCProtocolspecification
@@ -20,7 +18,11 @@ enum MessageType
     notify = 2
 }
 
-alias Tuple!(ushort, "port", string, "address") Endpoint;
+struct Endpoint
+{
+    ushort port;
+    string address;
+}
 
 /**
  * Base exception for RPC error hierarchy
