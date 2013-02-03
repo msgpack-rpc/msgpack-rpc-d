@@ -25,7 +25,7 @@ alias Tuple!(ushort, "port", string, "address") Endpoint;
 /**
  * Base exception for RPC error hierarchy
  */
-class RPCError : Exception
+class RPCException : Exception
 {
     enum Code = ".RPCError";
 
@@ -36,67 +36,67 @@ class RPCError : Exception
             auto errMsg = error.via.array[1].as!string;
 
             switch (errCode) {
-            case RPCError.Code:
-                throw new RPCError(errMsg);
-            case TimeoutError.Code:
-                throw new TimeoutError(errMsg);
-            case TransportError.Code:
-                throw new TransportError(errMsg);
-            case CallError.Code:
-                throw new CallError(errMsg);
-            case NoMethodError.Code:
-                throw new NoMethodError(errMsg);
-            case ArgumentError.Code:
-                throw new ArgumentError(errMsg);
+            case RPCException.Code:
+                throw new RPCException(errMsg);
+            case TimeoutException.Code:
+                throw new TimeoutException(errMsg);
+            case TransportException.Code:
+                throw new TransportException(errMsg);
+            case CallException.Code:
+                throw new CallException(errMsg);
+            case NoMethodException.Code:
+                throw new NoMethodException(errMsg);
+            case ArgumentException.Code:
+                throw new ArgumentException(errMsg);
             default:
                 throw new Exception("Unknown code: code = " ~ errCode);
             }
         } else {
-            throw new RPCError(error.as!string);
+            throw new RPCException(error.as!string);
         }
     }
 
-    mixin ErrorConstructor;
+    mixin ExceptionConstructor;
 }
 
 ///
-class TimeoutError : RPCError
+class TimeoutException : RPCException
 {
     enum Code = ".TimeoutError";
-    mixin ErrorConstructor;
+    mixin ExceptionConstructor;
 }
 
 ///
-class TransportError : RPCError
+class TransportException : RPCException
 {
     enum Code = ".TransportError";
-    mixin ErrorConstructor;
+    mixin ExceptionConstructor;
 }
 
 ///
-class CallError : RPCError
+class CallException : RPCException
 {
     enum Code = ".NoMethodError";
-    mixin ErrorConstructor;
+    mixin ExceptionConstructor;
 }
 
 ///
-class NoMethodError : CallError
+class NoMethodException : CallException
 {
     enum Code = ".CallError.NoMethodError";
-    mixin ErrorConstructor;
+    mixin ExceptionConstructor;
 }
 
 ///
-class ArgumentError : CallError
+class ArgumentException : CallException
 {
     enum Code = ".CallError.ArgumentError";
-    mixin ErrorConstructor;
+    mixin ExceptionConstructor;
 }
 
 private:
 
-mixin template ErrorConstructor()
+mixin template ExceptionConstructor()
 {
     @safe pure nothrow this(string msg)
     {
@@ -115,10 +115,10 @@ unittest
 {
     import std.typetuple;
 
-    foreach (Error; TypeTuple!(RPCError, TimeoutError, TransportError, CallError, NoMethodError, ArgumentError)) {
-        auto e = new Error("hoge");
+    foreach (E; TypeTuple!(RPCException, TimeoutException, TransportException, CallException, NoMethodException, ArgumentException)) {
+        auto e = new E("hoge");
         string[] codeAndMsg;
         unpack(pack(e), codeAndMsg);
-        assert(codeAndMsg[0] == Error.Code);
+        assert(codeAndMsg[0] == E.Code);
     }
 }

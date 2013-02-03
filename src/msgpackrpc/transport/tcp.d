@@ -94,7 +94,7 @@ abstract class BaseSocket
                 onNotify(unpacked[1].as!string, unpacked[2].via.array);
                 break;
             default:
-                throw new RPCError("Unknown message type: type = " ~ to!string(type));
+                throw new RPCException("Unknown message type: type = " ~ to!string(type));
             }
         }
     }

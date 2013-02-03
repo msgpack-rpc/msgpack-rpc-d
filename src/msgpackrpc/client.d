@@ -1,7 +1,7 @@
 // Written in the D programming language.
 
 /**
- * MessagePack RPC TCP transport layer
+ * MessagePack RPC Client
  */
 module msgpackrpc.client;
 
@@ -15,6 +15,9 @@ import std.array;
 import std.traits;
 
 
+/**
+ * MessagePack RPC Server serves Object or module based dispacher
+ */
 class Client
 {
   private:
