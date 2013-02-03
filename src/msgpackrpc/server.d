@@ -89,7 +89,7 @@ class Server(alias T, alias Protocol = msgpackrpc.transport.tcp)
         switch (method) {
         mixin(generateDispatchCases!T());
         default:
-            throw new NoMethodError("'%s' method not found".format(method));
+            throw new NoMethodException("'%s' method not found".format(method));
         }
 
         return result;
@@ -176,7 +176,7 @@ string genetateCaseBody(string prefix, string name, RT, ParameterTypes...)()
         result ~= q"CASE
 case "%s":
 if (params.length != %s)
-    throw new ArgumentError("the number of '%s' parameters is mismatched");
+    throw new ArgumentException("the number of '%s' parameters is mismatched");
 CASE".format(name, ParameterTypes.length, name);
     }
     else
