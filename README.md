@@ -7,7 +7,7 @@ MessagePack RPC implementation based on [vibe.d](http://vibed.org)
 ## Client
 
 ```d
-auto client = new TCPClient(Endpoint(cast(ushort)18500, "127.0.0.1"));
+auto client = new TCPClient(Endpoint(18800, "127.0.0.1"));
 
 // sync request
 auto num = client.call!ulong("sum", 1, 2);
@@ -58,7 +58,7 @@ void hello(string msg)
     writeln(msg);
 }
 
-auto server = new Server!(foo)();
+auto server = new TCPServer!(foo)();
 // same as Object
 ```
 
