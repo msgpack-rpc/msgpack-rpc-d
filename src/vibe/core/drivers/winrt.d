@@ -65,12 +65,12 @@ class WinRtEventDriver : EventDriver {
 		assert(false);
 	}
 
-	void listenTcp(ushort port, void delegate(TcpConnection conn) conn_callback, string bind_address)
+	void listenTcp(ushort port, void delegate(TcpConnection conn) conn_callback, string bind_address, TcpListenOptions options)
 	{
 		assert(false);
 	}
 
-	WinRtSignal createSignal()
+	WinRtManualEvent createManualEvent()
 	{
 		assert(false);
 	}
@@ -81,7 +81,7 @@ class WinRtEventDriver : EventDriver {
 	}
 }
 
-class WinRtSignal : Signal {
+class WinRtManualEvent : ManualEvent {
 	void release()
 	{
 	}

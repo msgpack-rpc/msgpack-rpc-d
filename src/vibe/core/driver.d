@@ -1,7 +1,7 @@
 /**
 	Contains interfaces and enums for evented I/O drivers.
 
-	Copyright: © 2012 RejectedSoftware e.K.
+	Copyright: © 2012-2013 RejectedSoftware e.K.
 	Authors: Sönke Ludwig
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 */
@@ -9,7 +9,7 @@ module vibe.core.driver;
 
 public import vibe.core.file;
 public import vibe.core.net;
-public import vibe.core.signal;
+public import vibe.core.sync;
 public import vibe.core.stream;
 public import vibe.core.task;
 
@@ -92,7 +92,7 @@ interface EventDriver {
 		interface. conn_callback is called for every incoming connection, each time from a
 		new task.
 	*/
-	TcpListener listenTcp(ushort port, void delegate(TcpConnection conn) conn_callback, string bind_address);
+	TcpListener listenTcp(ushort port, void delegate(TcpConnection conn) conn_callback, string bind_address, TcpListenOptions options);
 
 	/** Creates a new UDP socket and sets the specified address/port as the destination for packets.
 
@@ -101,9 +101,12 @@ interface EventDriver {
 	*/
 	UdpConnection listenUdp(ushort port, string bind_address = "0.0.0.0");
 
-	/** Creates a new signal (a single-threaded condition variable).
+	/** Creates a new manually triggered event.
 	*/
-	Signal createSignal();
+	ManualEvent createManualEvent();
+
+	/// Compatibility alias, will be deprecated soon.
+	alias createSignal = createManualEvent;
 
 	/** Creates a new timer.
 
@@ -161,4 +164,54 @@ interface Timer : EventedObject {
 	/** Waits until the timer fires.
 	*/
 	void wait();
+}
+
+
+mixin template SingleOwnerEventedObject() {
+	protected {
+		Task m_owner;
+	}
+
+	void release()
+	{
+		assert(isOwner(), "Releasing evented object that is not owned by the calling task.");
+		m_owner = Task();
+	}
+
+	void acquire()
+	{
+		assert(m_owner == Task(), "Acquiring evented object that is already owned.");
+		m_owner = Task.getThis();
+	}
+
+	bool isOwner()
+	{
+		return m_owner != Task() && m_owner == Task.getThis();
+	}
+}
+
+mixin template MultiOwnerEventedObject() {
+	protected {
+		Task[] m_owners;
+	}
+
+	void release()
+	{
+		auto self = Task.getThis();
+		auto idx = m_owners.countUntil(self);
+		assert(idx >= 0, "Releasing evented object that is not owned by the calling task.");
+		m_owners = m_owners[0 .. idx] ~ m_owners[idx+1 .. $];
+	}
+
+	void acquire()
+	{
+		auto self = Task.getThis();
+		assert(!isOwner(), "Acquiring evented object that is already owned by the calling task.");
+		m_owners ~= self;
+	}
+
+	bool isOwner()
+	{
+		return m_owners.countUntil(Task.getThis()) >= 0;
+	}
 }

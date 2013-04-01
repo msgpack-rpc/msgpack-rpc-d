@@ -27,7 +27,7 @@ Allocator defaultAllocator()
 		static Allocator alloc;
 		if( !alloc ){
 			alloc = new GCAllocator;
-			alloc = new AutoFreeListAllocator(alloc);
+			//alloc = new AutoFreeListAllocator(alloc);
 			//alloc = new DebugAllocator(alloc);
 		}
 		return alloc;
@@ -258,6 +258,26 @@ class PoolAllocator : Allocator {
 		m_baseAllocator = base;
 	}
 
+	@property size_t totalSize()
+	{
+		size_t amt = 0;
+		for (auto p = m_fullPools; p; p = p.next)
+			amt += p.data.length;
+		for (auto p = m_freePools; p; p = p.next)
+			amt += p.data.length;
+		return amt;
+	}
+
+	@property size_t allocatedSize()
+	{
+		size_t amt = 0;
+		for (auto p = m_fullPools; p; p = p.next)
+			amt += p.data.length;
+		for (auto p = m_freePools; p; p = p.next)
+			amt += p.data.length - p.remaining.length;
+		return amt;
+	}
+
 	void[] alloc(size_t sz)
 	{
 		auto aligned_sz = alignedSize(sz);
@@ -358,8 +378,8 @@ class PoolAllocator : Allocator {
 
 	private static destroy(T)(void* ptr)
 	{
-		static if( is(T == class) ) .clear(cast(T)ptr);
-		else .clear(*cast(T*)ptr);
+		static if( is(T == class) ) .destroy(cast(T)ptr);
+		else .destroy(*cast(T*)ptr);
 	}
 }
 
@@ -444,7 +464,7 @@ template FreeListObjectAlloc(T, bool USE_GC = true, bool INIT = true)
 	{
 		static if( INIT ){
 			auto objc = obj;
-			.clear(objc);//typeid(T).destroy(cast(void*)obj);
+			.destroy(objc);//typeid(T).destroy(cast(void*)obj);
 		}
 		static if( hasIndirections!T ) GC.removeRange(cast(void*)obj);
 		manualAllocator().free((cast(void*)obj)[0 .. ElemSize]);
@@ -522,7 +542,7 @@ struct FreeListRef(T, bool INIT = true)
 						//logInfo("ref %s destroy", T.stringof);
 						//typeid(T).destroy(cast(void*)m_object);
 						auto objc = m_object;
-						.clear(objc);
+						.destroy(objc);
 						//logInfo("ref %s destroyed", T.stringof);
 					}
 					static if( hasIndirections!T ) GC.removeRange(cast(void*)m_object);

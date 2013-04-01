@@ -7,27 +7,27 @@
 */
 module vibe.stream.ssl;
 
-public import vibe.crypto.ssl;
-
 import vibe.core.log;
 import vibe.core.stream;
 
 import deimos.openssl.bio;
 import deimos.openssl.err;
+import deimos.openssl.rand;
 import deimos.openssl.ssl;
 
 import std.algorithm;
 import std.conv;
 import std.exception;
+import std.string;
 
 import core.stdc.string : strlen;
 
+version = SSL;
 
-enum SslStreamState {
-	Connecting,
-	Accepting,
-	Connected
-}
+
+/**************************************************************************************************/
+/* Public types                                                                                   */
+/**************************************************************************************************/
 
 class SslStream : Stream {
 	private {
@@ -56,15 +56,15 @@ class SslStream : Stream {
 		SSL_set_bio(m_ssl, m_bio, m_bio);
 
 		final switch (state) {
-			case SslStreamState.Accepting:
+			case SslStreamState.accepting:
 				//SSL_set_accept_state(m_ssl);
-				SSL_accept(m_ssl);
+				enforceSsl(SSL_accept(m_ssl), "Failed to accept SSL tunnel");
 				break;
-			case SslStreamState.Connecting:
+			case SslStreamState.connecting:
 				//SSL_set_connect_state(m_ssl);
-				SSL_connect(m_ssl);
+				enforceSsl(SSL_connect(m_ssl), "Failed to connect SSL tunnel.");
 				break;
-			case SslStreamState.Connected:
+			case SslStreamState.connected:
 				break;
 		}
 		checkExceptions();
@@ -72,7 +72,7 @@ class SslStream : Stream {
 
 	~this()
 	{
-		BIO_free(m_bio);
+		if( m_ssl ) SSL_free(m_ssl);
 	}
 
 	@property bool empty()
@@ -144,8 +144,13 @@ class SslStream : Stream {
 
 	void finalize()
 	{
+		if( !m_ssl ) return;
 		logTrace("SslStream finalize");
+
 		SSL_shutdown(m_ssl);
+		SSL_free(m_ssl);
+		m_ssl = null;
+
 		checkExceptions();
 	}
 
@@ -162,6 +167,112 @@ class SslStream : Stream {
 			throw m_exceptions[0];
 		}
 	}
+
+	private int enforceSsl(int ret, string message)
+	{
+		if( ret <= 0 ){
+			auto errmsg = to!string(SSL_get_error(m_ssl, ret));
+			throw new Exception(message~": "~errmsg);
+		}
+		return ret;
+	}
+}
+
+enum SslStreamState {
+	connecting,
+	accepting,
+	connected,
+
+	/// deprecated
+	Connecting = connecting,
+	/// deprecated
+	Accepting = accepting,
+	/// deprecated
+	Connected = connected
+}
+
+class SslContext {
+	private {
+		ssl_ctx_st* m_ctx;
+	}
+
+	this(string cert_file, string key_file, SSLVersion ver = SSLVersion.ssl23)
+	{
+		version(SSL){
+			const(SSL_METHOD)* method;
+			final switch(ver){
+				case SSLVersion.ssl23: method = SSLv23_server_method(); break;
+				case SSLVersion.ssl3: method = SSLv3_server_method(); break;
+				case SSLVersion.tls1: method = TLSv1_server_method(); break;
+				case SSLVersion.dtls1: method = DTLSv1_server_method(); break;
+			}
+			m_ctx = SSL_CTX_new(method);
+			auto succ = SSL_CTX_use_certificate_chain_file(m_ctx, toStringz(cert_file)) &&
+					SSL_CTX_use_PrivateKey_file(m_ctx, toStringz(key_file), SSL_FILETYPE_PEM);
+			enforce(succ, "Failed to load server cert/key.");
+			SSL_CTX_set_options!()(m_ctx, SSL_OP_NO_SSLv2);
+		} else enforce(false, "No SSL support compiled in!");
+	}
+
+	this(SSLVersion ver = SSLVersion.ssl23)
+	{
+		version(SSL){
+			const(SSL_METHOD)* method;
+			final switch(ver){
+				case SSLVersion.ssl23: method = SSLv23_client_method(); break;
+				case SSLVersion.ssl3: method = SSLv3_client_method(); break;
+				case SSLVersion.tls1: method = TLSv1_client_method(); break;
+				case SSLVersion.dtls1: method = DTLSv1_client_method(); break;
+			}
+			m_ctx = SSL_CTX_new(method);
+			SSL_CTX_set_options!()(m_ctx, SSL_OP_NO_SSLv2);
+		} else enforce(false, "No SSL support compiled in!");
+	}
+
+	~this()
+	{
+		SSL_CTX_free(m_ctx);
+		m_ctx = null;
+	}
+
+	ssl_st* createClientCtx()
+	{
+		version(SSL) return SSL_new(m_ctx);
+		else assert(false);
+	}
+}
+
+enum SSLVersion {
+	ssl23,
+	ssl3,
+	tls1,
+	dtls1,
+
+	/// deprecated
+	SSLv23 = ssl23,
+	/// deprecated
+	SSLv3 = ssl3,
+	/// deprecated
+	TLSv1 = tls1,
+	/// deprecated
+	DTLSv1 = dtls1
+}
+
+
+/**************************************************************************************************/
+/* Private functions                                                                              */
+/**************************************************************************************************/
+
+shared static this()
+{
+	logDebug("Initializing OpenSSL...");
+	SSL_load_error_strings();
+	SSL_library_init();
+	// TODO: call thread safety functions!
+	/* We MUST have entropy, or else there's no point to crypto. */
+	auto ret = RAND_poll();
+	assert(ret);
+	logDebug("... done.");
 }
 
 private nothrow extern(C)

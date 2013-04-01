@@ -21,6 +21,7 @@ static import vibe.textfilter.markdown;
 import vibe.utils.string;
 
 import core.vararg;
+import std.ascii : isAlpha;
 import std.array;
 import std.conv;
 import std.format;
@@ -61,7 +62,7 @@ void compileDietFile(string template_file, ALIASES...)(OutputStream stream__)
 	// Generate the D source code for the diet template
 	//pragma(msg, dietParser!template_file());
 	mixin(dietParser!template_file);
-	#line 65 "diet.d"
+	#line 66 "diet.d"
 }
 
 /// compatibility alias
@@ -92,7 +93,7 @@ void compileDietFileCompatV(string template_file, TYPES_AND_NAMES...)(OutputStre
 	// Generate the D source code for the diet template
 	//pragma(msg, dietParser!template_file());
 	mixin(dietParser!template_file);
-	#line 96 "diet.d"
+	#line 97 "diet.d"
 }
 
 /// compatibility alias
@@ -643,7 +644,7 @@ private struct DietCompiler {
 		}
 		if( tag == "script" ) output.writeString(indent_string~"//]]>\n");
 		else output.writeString(indent_string~"-->\n");
-		output.writeString(indent_string[0 .. $-2] ~ "</" ~ tag ~ ">");
+		output.writeString(indent_string[0 .. $-1] ~ "</" ~ tag ~ ">");
 	}
 
 	private void buildFilterNodeWriter(OutputContext output, in ref string tagline, int tagline_number,
@@ -749,7 +750,7 @@ private struct DietCompiler {
 			if( att[0][0] == '$' ) continue; // ignore special attributes
 			if( isStringLiteral(att[1]) ){
 				output.writeString(" "~att[0]~"=\"");
-				if( !hasInterpolations(att[1]) ) output.writeString(htmlEscape(dstringUnescape(att[1][1 .. $-1])));
+				if( !hasInterpolations(att[1]) ) output.writeString(htmlAttribEscape(dstringUnescape(att[1][1 .. $-1])));
 				else buildInterpolatedString(output, att[1][1 .. $-1], true);
 
 				// output extra classes given as .class
@@ -765,9 +766,13 @@ private struct DietCompiler {
 			} else {
 				output.writeCodeLine("static if(is(typeof("~att[1]~") == bool)){ if("~att[1]~"){");
 				output.writeString(` `~att[0]~`="`~att[0]~`"`);
-				output.writeCodeLine("}} else {\n");
+				output.writeCodeLine("}} else static if(is(typeof("~att[1]~") == string[])){\n");
 				output.writeString(` `~att[0]~`="`);
-				output.writeExprHtmlEscaped(att[1]);
+				output.writeExprHtmlAttribEscaped(`join(`~att[1]~`, " ")`);
+				output.writeString(`"`);
+				output.writeCodeLine("} else {");
+				output.writeString(` `~att[0]~`="`);
+				output.writeExprHtmlAttribEscaped(att[1]);
 				output.writeString(`"`);
 				output.writeCodeLine("}");
 			}

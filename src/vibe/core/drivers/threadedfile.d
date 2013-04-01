@@ -73,10 +73,8 @@ class ThreadedFileStream : FileStream {
 	
 	this(Path path, FileMode mode)
 	{
-		m_path = path;
-		m_mode = mode;
-		auto pathstr = m_path.toNativeString();
-		final switch(m_mode){
+		auto pathstr = path.toNativeString();
+		final switch(mode){
 			case FileMode.Read:
 				m_fileDescriptor = open(pathstr.toStringz(), O_RDONLY|O_BINARY);
 				break;
@@ -91,10 +89,19 @@ class ThreadedFileStream : FileStream {
 				break;
 		}
 		if( m_fileDescriptor < 0 )
-			//throw new Exception(formatString("Failed to open '%s' with %s: %d", pathstr, cast(int)mode, errno));
-			throw new Exception("Failed to open "~pathstr);
+			//throw new Exception(format("Failed to open '%s' with %s: %d", pathstr, cast(int)mode, errno));
+			throw new Exception("Failed to open file '"~pathstr~"'.");
 		
-			
+		this(m_fileDescriptor, path, mode);
+	}
+
+	this(int fd, Path path, FileMode mode)
+	{
+		assert(fd >= 0);
+		m_fileDescriptor = fd;
+		m_path = path;
+		m_mode = mode;
+
 		version(linux){
 			// stat_t seems to be defined wrong on linux/64
 			m_size = .lseek(m_fileDescriptor, 0, SEEK_END);
@@ -106,12 +113,12 @@ class ThreadedFileStream : FileStream {
 			// (at least) on windows, the created file is write protected
 			version(Windows){
 				if( mode == FileMode.CreateTrunc )
-					chmod(pathstr.toStringz(), S_IREAD|S_IWRITE);
+					chmod(path.toNativeString().toStringz(), S_IREAD|S_IWRITE);
 			}
 		}
 		lseek(m_fileDescriptor, 0, SEEK_SET);
 		
-		logDebug("opened file %s with %d bytes as %d", pathstr, m_size, m_fileDescriptor);
+		logDebug("opened file %s with %d bytes as %d", path.toNativeString(), m_size, m_fileDescriptor);
 	}
 
 	~this()
@@ -122,7 +129,7 @@ class ThreadedFileStream : FileStream {
 	@property int fd() { return m_fileDescriptor; }
 	@property Path path() const { return m_path; }
 	@property ulong size() const { return m_size; }
-	@property bool readable() const { return m_mode == FileMode.Read; }
+	@property bool readable() const { return m_mode != FileMode.Append; }
 	@property bool writable() const { return m_mode != FileMode.Read; }
 
 	void acquire()
@@ -186,7 +193,8 @@ class ThreadedFileStream : FileStream {
 	{
 		assert(this.writable);
 		assert(bytes.length <= int.max);
-		enforce(.write(m_fileDescriptor, bytes.ptr, cast(int)bytes.length) == bytes.length, "Failed to write data to disk.");
+		auto ret = .write(m_fileDescriptor, bytes.ptr, cast(int)bytes.length);
+		enforce(ret == bytes.length, "Failed to write data to disk."~to!string(bytes.length)~" "~to!string(errno)~" "~to!string(ret)~" "~to!string(m_fileDescriptor));
 		m_ptr += bytes.length;
 	}
 

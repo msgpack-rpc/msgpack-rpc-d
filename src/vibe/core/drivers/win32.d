@@ -15,6 +15,7 @@ import vibe.core.driver;
 import vibe.core.log;
 import vibe.inet.url;
 import vibe.utils.array;
+import vibe.utils.hashmap;
 
 import core.atomic;
 import core.sync.mutex;
@@ -26,6 +27,7 @@ import std.conv;
 import std.c.windows.windows;
 import std.c.windows.winsock;
 import std.exception;
+import std.typecons;
 import std.utf;
 
 enum WM_USER_SIGNAL = WM_USER+101;
@@ -100,6 +102,8 @@ class Win32EventDriver : EventDriver {
 		MSG msg;
 		while( PeekMessageW(&msg, null, 0, 0, PM_REMOVE) ){
 			if( msg.message == WM_QUIT ) break;
+			if( msg.message == WM_USER_SIGNAL )
+				msg.hwnd = m_hwnd;
 			TranslateMessage(&msg);
 			DispatchMessageW(&msg);
 		}
@@ -213,7 +217,7 @@ class Win32EventDriver : EventDriver {
 		return conn;	
 	}
 
-	Win32TcpListener listenTcp(ushort port, void delegate(TcpConnection conn) conn_callback, string bind_address)
+	Win32TcpListener listenTcp(ushort port, void delegate(TcpConnection conn) conn_callback, string bind_address, TcpListenOptions options)
 	{
 		assert(m_tid == GetCurrentThreadId());
 		auto addr = resolveHost(bind_address);
@@ -240,10 +244,10 @@ class Win32EventDriver : EventDriver {
 		assert(false);
 	}
 
-	Win32Signal createSignal()
+	Win32ManualEvent createManualEvent()
 	{
 		assert(m_tid == GetCurrentThreadId());
-		return new Win32Signal(this);
+		return new Win32ManualEvent(this);
 	}
 
 	Win32Timer createTimer(void delegate() callback)
@@ -277,12 +281,12 @@ class Win32EventDriver : EventDriver {
 		switch(msg){
 			default: break;
 			case WM_USER_SIGNAL:
-				auto sig = cast(Win32Signal)cast(void*)lparam;
-				DWORD[Task] lst;
+				auto sig = cast(Win32ManualEvent)cast(void*)lparam;
+				Win32EventDriver[Task] lst;
 				try {
 					synchronized(sig.m_mutex) lst = sig.m_listeners.dup;
 					foreach( task, tid; lst )
-						if( tid == driver.m_tid && task )
+						if( tid is driver && task )
 							driver.m_core.resumeTask(task);
 				} catch(Throwable th){
 					logWarn("Failed to resume signal listeners: %s", th.msg);
@@ -313,17 +317,17 @@ interface SocketEventHandler {
 /* class Win32Signal                                                          */
 /******************************************************************************/
 
-class Win32Signal : Signal {
+class Win32ManualEvent : ManualEvent {
 	private {
-		Mutex m_mutex;
+		core.sync.mutex.Mutex m_mutex;
 		Win32EventDriver m_driver;
-		DWORD[Task] m_listeners;
+		Win32EventDriver[Task] m_listeners;
 		shared int m_emitCount = 0;
 	}
 
 	this(Win32EventDriver driver)
 	{
-		m_mutex = new Mutex;
+		m_mutex = new core.sync.mutex.Mutex;
 		m_driver = driver;
 	}
 
@@ -331,14 +335,15 @@ class Win32Signal : Signal {
 	{
 		auto newcnt = atomicOp!"+="(m_emitCount, 1);
 		logDebug("Signal %s emit %s", cast(void*)this, newcnt);
-		bool[DWORD] threads;
+		bool[Win32EventDriver] threads;
 		synchronized(m_mutex)
 		{
 			foreach( th; m_listeners )
 				threads[th] = true;
 		}
 		foreach( th, _; threads )
-			PostThreadMessageW(th, WM_USER_SIGNAL, 0, cast(LPARAM)cast(void*)this);
+			if( !PostMessageW(th.m_hwnd, WM_USER_SIGNAL, 0, cast(LPARAM)cast(void*)this) )
+				logWarn("Failed to post thread message.");
 	}
 
 	void wait()
@@ -346,23 +351,26 @@ class Win32Signal : Signal {
 		wait(emitCount);
 	}
 
-	void wait(int reference_emit_count)
+	int wait(int reference_emit_count)
 	{
 		logDebug("Signal %s wait enter %s", cast(void*)this, reference_emit_count);
 		assert(!isOwner());
-		auto self = Fiber.getThis();
 		acquire();
 		scope(exit) release();
-		while( atomicOp!"=="(m_emitCount, reference_emit_count) )
+		auto ec = atomicLoad(m_emitCount);
+		while( ec == reference_emit_count ){
 			m_driver.m_core.yieldForEvent();
-		logDebug("Signal %s wait leave %s", cast(void*)this, m_emitCount);
+			ec = atomicLoad(m_emitCount);
+		}
+		logDebug("Signal %s wait leave %s", cast(void*)this, ec);
+		return ec;
 	}
 
 	void acquire()
 	{
 		synchronized(m_mutex)
 		{
-			m_listeners[Task.getThis()] = GetCurrentThreadId();
+			m_listeners[Task.getThis()] = cast(Win32EventDriver)getEventDriver();
 		}
 	}
 
@@ -447,8 +455,10 @@ class Win32Timer : Timer {
 
 	void stop()
 	{
-		assert(m_pending);
+		if (!m_pending) return;
+		m_pending = false;
 		KillTimer(null, m_id);
+		s_timers.remove(m_id);
 	}
 
 	void wait()
@@ -463,18 +473,19 @@ class Win32Timer : Timer {
 	void onTimer(HWND hwnd, UINT msg, UINT_PTR id, uint time)
 	{
 		try{
-			auto timer = id in s_timers;
-			if( !timer ){
+			auto timer = s_timers.get(id);
+			if (!timer) {
 				logWarn("timer %d not registered", id);
 				return;
 			}
-			if( timer.m_periodic ){
+			assert(timer !is null, "Null timer detected.");
+			if (timer.m_periodic) {
 				timer.rearm(timer.m_timeout, true);
 			} else {
 				timer.m_pending = false;
 			}
-			if( timer.m_owner ) timer.m_driver.m_core.resumeTask(timer.m_owner);
-			if( timer.m_callback ) timer.m_callback();
+			if (timer.m_owner) timer.m_driver.m_core.resumeTask(timer.m_owner);
+			if (timer.m_callback) timer.m_callback();
 		} catch(Exception e){
 			logError("Exception in onTimer: %s", e);
 		}
@@ -766,7 +777,7 @@ class Win32DirectoryWatcher : DirectoryWatcher {
 		if( !ReadDirectoryChangesW(m_handle, m_buffer.ptr, m_buffer.length, m_recursive,
 								   m_notifications, &bytesReturned, &overlapped, &onIOCompleted) )
 		{
-			logError("Failed to read directory changes in '{}'", m_path);
+			logError("Failed to read directory changes in '%s'", m_path);
 			return false;
 		}
 
@@ -960,6 +971,7 @@ class Win32TcpConnection : TcpConnection, SocketEventHandler {
 		DWORD m_bytesTransferred;
 		ConnectionStatus m_status = ConnectionStatus.Initialized;
 		FixedRingBuffer!(ubyte, 64*1024) m_readBuffer;
+		void delegate(TcpConnection) m_connectionCallback;
 
 		HANDLE m_transferredFile;
 		OVERLAPPED m_fileOverlapped;
@@ -1076,7 +1088,7 @@ m_status = ConnectionStatus.Connected;
 
 	bool waitForData(Duration timeout)
 	{
-		auto tm = m_driver.createTimer(null);
+		auto tm = scoped!Win32Timer(m_driver, cast(void delegate())null);
 		tm.acquire();
 		tm.rearm(timeout);
 		while( m_readBuffer.empty ){
@@ -1108,17 +1120,18 @@ m_status = ConnectionStatus.Connected;
 		checkConnected();
 		const(ubyte)[] bytes = bytes_;
 		logTrace("TCP write with %s bytes called", bytes.length);
+
+		WSAOVERLAPPEDX overlapped;
+		overlapped.Internal = 0;
+		overlapped.InternalHigh = 0;
+		overlapped.Offset = 0;
+		overlapped.OffsetHigh = 0;
+		overlapped.hEvent = cast(HANDLE)cast(void*)this;
+
 		while( bytes.length > 0 ){
 			WSABUF buf;
 			buf.len = bytes.length;
 			buf.buf = cast(ubyte*)bytes.ptr;
-
-			WSAOVERLAPPEDX overlapped;
-			overlapped.Internal = 0;
-			overlapped.InternalHigh = 0;
-			overlapped.Offset = 0;
-			overlapped.OffsetHigh = 0;
-			overlapped.hEvent = cast(HANDLE)cast(void*)this;
 
 			m_bytesTransferred = 0;
 			logTrace("Sending %s bytes TCP", buf.len);
@@ -1266,6 +1279,19 @@ m_status = ConnectionStatus.Connected;
 		}
 	}
 
+	void runConnectionCallback()
+	{
+		try {
+			acquire();
+			m_connectionCallback(this);
+			logDebug("task out (fd %d).", m_socket);
+		} catch( Exception e ){
+			logWarn("Handling of connection failed: %s", e.msg);
+			logDiagnostic("%s", e.toString());
+		}
+		if( this.connected ) close();
+	}
+
 	private static extern(System) nothrow
 	void onIOCompleted(DWORD dwError, DWORD cbTransferred, WSAOVERLAPPEDX* lpOverlapped, DWORD dwFlags)
 	{
@@ -1321,26 +1347,19 @@ class Win32TcpListener : TcpListener, SocketEventHandler {
 			default: assert(false);
 			case FD_ACCEPT:
 				try {
+					NetworkAddress addr;
+					addr.family = AF_INET6;
+					int addrlen = addr.sockAddrLen;
+					auto clientsock = WSAAccept(sock, addr.sockAddr, &addrlen, null, 0);
+					assert(addrlen == addr.sockAddrLen);
 					// TODO avoid GC allocations for delegate and Win32TcpConnection
-					runTask({
-						NetworkAddress addr;
-						addr.family = AF_INET6;
-						int addrlen = addr.sockAddrLen;
-						auto clientsock = WSAAccept(sock, addr.sockAddr, &addrlen, null, 0);
-						assert(addrlen == addr.sockAddrLen);
-						auto conn = new Win32TcpConnection(m_driver, clientsock, addr);
-						try {
-							m_connectionCallback(conn);
-							logDebug("task out (fd %d).", sock);
-						} catch( Exception e ){
-							logWarn("Handling of connection failed: %s", e.msg);
-							logDebug("%s", e.toString());
-						}
-						if( conn.connected ) conn.close();
-					});
+					auto conn = new Win32TcpConnection(m_driver, clientsock, addr);
+					conn.m_connectionCallback = m_connectionCallback;
+					conn.release();
+					runTask(&conn.runConnectionCallback);
 				} catch( Exception e ){
 					logWarn("Exception white accepting TCP connection: %s", e.msg);
-					try logDebug("Exception white accepting TCP connection: %s", e.toString());
+					try logDiagnostic("Exception white accepting TCP connection: %s", e.toString());
 					catch( Exception ){}
 				}
 				break;
@@ -1350,7 +1369,7 @@ class Win32TcpListener : TcpListener, SocketEventHandler {
 
 
 private {
-	Win32Timer[UINT_PTR] s_timers;
+	HashMap!(UINT_PTR, Win32Timer, { return UINT_PTR.max; }) s_timers;
 	__gshared s_setupWindowClass = false;
 }
 

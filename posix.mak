@@ -6,7 +6,7 @@ ifeq (,$(DMD))
 endif
 
 LIB     = libmsgpackrpcd.a
-DFLAGS  = -Isrc -m$(MODEL) -w -d -property
+DFLAGS  = -Isrc -m$(MODEL) -w -d -property -version=VibeLibeventDriver
 
 ifeq ($(BUILD),debug)
 	DFLAGS += -g -debug
@@ -123,15 +123,11 @@ SRCS  = \
 	src/vibe/core/drivers/winrt.d \
 	src/vibe/core/file.d \
 	src/vibe/core/log.d \
-	src/vibe/core/mutex.d \
 	src/vibe/core/net.d \
-	src/vibe/core/signal.d \
 	src/vibe/core/stream.d \
+	src/vibe/core/sync.d \
 	src/vibe/core/task.d \
-	src/vibe/crypto/md5.d \
 	src/vibe/crypto/passwordhash.d \
-	src/vibe/crypto/sha1.d \
-	src/vibe/crypto/ssl.d \
 	src/vibe/data/json.d \
 	src/vibe/data/utils.d \
 	src/vibe/http/auth/basic_auth.d \
@@ -143,6 +139,7 @@ SRCS  = \
 	src/vibe/http/log.d \
 	src/vibe/http/proxy.d \
 	src/vibe/http/rest.d \
+	src/vibe/http/restutil.d \
 	src/vibe/http/router.d \
 	src/vibe/http/server.d \
 	src/vibe/http/session.d \

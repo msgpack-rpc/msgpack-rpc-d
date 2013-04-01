@@ -7,6 +7,9 @@
 */
 module vibe.core.drivers.libevent2_tcp;
 
+version(VibeLibeventDriver)
+{
+
 public import vibe.core.core;
 
 import vibe.core.log;
@@ -58,6 +61,7 @@ package class Libevent2TcpConnection : TcpConnection {
 		ubyte[64] m_peekBuffer;
 		bool m_tcpNoDelay = false;
 		Duration m_readTimeout;
+		char[64] m_peerAddressBuf;
 	}
 	
 	this(TcpContext* ctx)
@@ -68,12 +72,11 @@ package class Libevent2TcpConnection : TcpConnection {
 
 		assert(Fiber.getThis() is m_ctx.task);
 
-		char buf[64];
 		void* ptr;
 		if( ctx.remote_addr.family == AF_INET ) ptr = &ctx.remote_addr.sockAddrInet4.sin_addr;
 		else ptr = &ctx.remote_addr.sockAddrInet6.sin6_addr;
-		evutil_inet_ntop(ctx.remote_addr.family, ptr, buf.ptr, buf.length);
-		m_peerAddress = to!string(buf.ptr);
+		evutil_inet_ntop(ctx.remote_addr.family, ptr, m_peerAddressBuf.ptr, m_peerAddressBuf.length);
+		m_peerAddress = cast(string)m_peerAddressBuf[0 .. m_peerAddressBuf.indexOf('\0')];
 	}
 	
 	~this()
@@ -167,7 +170,6 @@ package class Libevent2TcpConnection : TcpConnection {
 
 	@property bool dataAvailableForRead()
 	{
-		size_t len;
 		auto buf = m_inputBuffer;
 		return evbuffer_get_length(buf) > 0;
 	}
@@ -221,7 +223,7 @@ package class Libevent2TcpConnection : TcpConnection {
 			if( dataAvailableForRead || m_timeout_triggered ) break;
 			try rawYield();
 			catch( Exception e ){
-				logDebug("Connection error during waitForData: %s", e.toString());
+				logDiagnostic("Connection error during waitForData: %s", e.toString());
 			}
 		}
 		logTrace(" -> timeout = %s", m_timeout_triggered);
@@ -291,22 +293,25 @@ package class Libevent2TcpConnection : TcpConnection {
 
 class LibeventTcpListener : TcpListener {
 	private {
-		TcpContext* m_ctx;
+		TcpContext*[] m_ctx;
 	}
 
-	this(TcpContext* ctx)
+	void addContext(TcpContext* ctx)
 	{
-		m_ctx = ctx;
+		synchronized(this) m_ctx ~= ctx;
 	}
 
 	void stopListening()
 	{
-		if( !m_ctx ) return;
-
-		event_free(m_ctx.listenEvent);
-		evutil_closesocket(m_ctx.socketfd);
-		TcpContextAlloc.free(m_ctx);
-		m_ctx = null;
+		synchronized(this)
+		{
+			foreach (ctx; m_ctx) {
+				event_free(ctx.listenEvent);
+				evutil_closesocket(ctx.socketfd);
+				TcpContextAlloc.free(ctx);
+			}
+			m_ctx = null;
+		}
 	}
 }
 
@@ -404,7 +409,7 @@ package nothrow extern(C)
 					logDebug("task out (fd %d).", client_ctx.socketfd);
 				} catch( Exception e ){
 					logWarn("Handling of connection failed: %s", e.msg);
-					logDebug("%s", e.toString());
+					logDiagnostic("%s", e.toString());
 				}
 				if( conn.connected ) conn.close();
 
@@ -552,4 +557,6 @@ package void removeFromArray(T)(ref T[] array, T item)
 			array = array[0 .. i] ~ array[i+1 .. $];
 			return;
 		}
+}
+
 }

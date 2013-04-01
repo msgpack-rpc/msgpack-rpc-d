@@ -32,13 +32,14 @@ void listenHttpDist(HttpServerSettings settings, HttpServerRequestDelegate handl
 
 	HttpServerSettings local_settings = settings.dup;
 	local_settings.port = 0;
-	listenHttpPlain(local_settings, handler);
+	local_settings.disableDistHost = true;
+	listenHttp(local_settings, handler);
 
 	regmsg.localPort = local_settings.port;
 
 	logInfo("Listening for VibeDist connections on port %d", local_settings.port);
 
-	auto res = requestHttp(Url.parse("http://"~balancer_address~":"~to!string(balancer_port)~"/register"), (req){
+	auto res = requestHttp(Url.parse("http://"~balancer_address~":"~to!string(balancer_port)~"/register"), (scope req){
 			req.writeJsonBody(regmsg);
 		});
 	scope(exit) destroy(res);

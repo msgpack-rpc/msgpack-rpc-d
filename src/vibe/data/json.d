@@ -164,6 +164,11 @@ struct Json {
 	Json[string] opAssign(Json[string] v) { m_type = Type.Object; m_object = v; return v; }
 
 	/**
+		Allows removement of values from Type.Object Json objects.
+	*/
+	void remove(string item) { checkType!(Json[string])(); m_object.remove(item); }
+	
+	/**
 		The current type id of this JSON object.
 	*/
 	@property Type type() const { return m_type; }
@@ -710,26 +715,30 @@ Json parseJson(R)(ref R range, int* line = null)
 	if( is(R == string) )
 {
 	Json ret;
-	enforce(range.length > 0, "JSON string is empty.");
+	enforce(!range.empty, "JSON string is empty.");
 
 	skipWhitespace(range, line);
 
-	version(JsonLineNumbers) int curline = line ? *line : 0;
+	version(JsonLineNumbers){
+		import vibe.core.log;
+		int curline = line ? *line : 0;
+		scope(failure) logError("Error in line: %d", curline);
+	}
 
-	switch( range[0] ){
+	switch( range.front ){
 		case 'f':
 			enforce(range[1 .. $].startsWith("alse"), "Expected 'false', got '"~range[0 .. 5]~"'.");
-			range = range[5 .. $];
+			range.popFrontN(5);
 			ret = false;
 			break;
 		case 'n':
 			enforce(range[1 .. $].startsWith("ull"), "Expected 'null', got '"~range[0 .. 4]~"'.");
-			range = range[4 .. $];
+			range.popFrontN(4);
 			ret = null;
 			break;
 		case 't':
 			enforce(range[1 .. $].startsWith("rue"), "Expected 'true', got '"~range[0 .. 4]~"'.");
-			range = range[4 .. $];
+			range.popFrontN(4);
 			ret = true;
 			break;
 		case '0': .. case '9'+1:
@@ -744,38 +753,40 @@ Json parseJson(R)(ref R range, int* line = null)
 			break;
 		case '[':
 			Json[] arr;
+			range.popFront();
 			while(true) {
-				enforce(range.length > 0);
-				if(range[0] == ']') break;
-				range = range[1 .. $];
 				skipWhitespace(range, line);
-				if(range[0] == ']') break;
+				enforce(!range.empty);
+				if(range.front == ']') break;
 				arr ~= parseJson(range, line);
 				skipWhitespace(range, line);
-				enforce(range.length > 0 && (range[0] == ',' || range[0] == ']'), "Expected ']' or ','.");
+				enforce(!range.empty && (range.front == ',' || range.front == ']'), "Expected ']' or ','.");
+				if( range.front == ']' ) break;
+				else range.popFront();
 			}
-			range = range[1 .. $];
+			range.popFront();
 			ret = arr;
 			break;
 		case '{':
 			Json[string] obj;
+			range.popFront();
 			while(true) {
-				enforce(range.length > 0);
-				if(range[0] == '}') break;
-				range = range[1 .. $];
 				skipWhitespace(range, line);
-				if(range[0] == '}') break;
+				enforce(!range.empty);
+				if(range.front == '}') break;
 				string key = skipJsonString(range);
 				skipWhitespace(range, line);
 				enforce(range.startsWith(":"), "Expected ':' for key '" ~ key ~ "'");
-				range = range[1 .. $];
+				range.popFront();
 				skipWhitespace(range, line);
 				Json itm = parseJson(range, line);
 				obj[key] = itm;
 				skipWhitespace(range, line);
-				enforce(range.length > 0 && (range[0] == ',' || range[0] == '}'), "Expected '}' or ',' - got '"~range[0]~"'.");
+				enforce(!range.empty && (range.front == ',' || range.front == '}'), "Expected '}' or ',' - got '"~range[0]~"'.");
+				if( range.front == '}' ) break;
+				else range.popFront();
 			}
-			range = range[1 .. $];
+			range.popFront();
 			ret = obj;
 			break;
 		default:
@@ -1136,12 +1147,11 @@ void writePrettyJsonString(R)(ref R dst, in Json json, int level = 0)
 
 /** Deprecated aliases for backwards compatibility.
 
-	Use writeJsonString and writePrettyJsonString instead. These aliases will 
-	be marked "deprecated" in the next release.
+	Use writeJsonString and writePrettyJsonString instead.
 */
-/*deprecated*/ alias writeJsonString toJson;
+deprecated("Please use writeJsonString instead.") alias writeJsonString toJson;
 ///
-/*deprecated*/ alias writePrettyJsonString toPrettyJson;
+deprecated("Please use writePrettyJsonString instead.") alias writePrettyJsonString toPrettyJson;
 
 
 /// private

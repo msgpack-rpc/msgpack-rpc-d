@@ -7,6 +7,9 @@
 */
 module vibe.core.drivers.libevent2;
 
+version(VibeLibeventDriver)
+{
+
 import vibe.core.driver;
 import vibe.core.drivers.libevent2_tcp;
 import vibe.core.drivers.threadedfile;
@@ -29,6 +32,7 @@ import core.sync.rwmutex;
 import core.sys.posix.netinet.in_;
 import core.sys.posix.netinet.tcp;
 version(Windows) import std.c.windows.winsock;
+import core.atomic;
 import core.thread;
 import std.conv;
 import std.encoding : sanitize;
@@ -79,10 +83,10 @@ class Libevent2Driver : EventDriver {
 		evthread_set_id_callback(&lev_get_thread_id);
 
 		// initialize libevent
-		logDebug("libevent version: %s", to!string(event_get_version()));
+		logDiagnostic("libevent version: %s", to!string(event_get_version()));
 		m_eventLoop = event_base_new();
 		s_eventLoop = m_eventLoop;
-		logDebug("libevent is using %s for events.", to!string(event_base_get_method(m_eventLoop)));
+		logDiagnostic("libevent is using %s for events.", to!string(event_base_get_method(m_eventLoop)));
 		evthread_make_base_notifiable(m_eventLoop);
 		
 		m_dnsBase = evdns_base_new(m_eventLoop, 1);
@@ -214,7 +218,7 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 		return new Libevent2TcpConnection(cctx);
 	}
 
-	TcpListener listenTcp(ushort port, void delegate(TcpConnection conn) connection_callback, string address)
+	TcpListener listenTcp(ushort port, void delegate(TcpConnection conn) connection_callback, string address, TcpListenOptions options)
 	{
 		auto bind_addr = resolveHost(address, AF_UNSPEC, true);
 		bind_addr.port = port;
@@ -232,15 +236,26 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 		// Set socket for non-blocking I/O
 		enforce(evutil_make_socket_nonblocking(listenfd) == 0,
 			"Error setting listening socket to non-blocking I/O.");
+
+		auto ret = new LibeventTcpListener;
+
+		void setupConnectionHandler()
+		{
+			auto evloop = getThreadLibeventEventLoop();
+			auto core = getThreadLibeventDriverCore();
+			// Add an event to wait for connections
+			auto ctx = TcpContextAlloc.alloc(core, evloop, listenfd, null, bind_addr);
+			ctx.connectionCallback = connection_callback;
+			ctx.listenEvent = event_new(evloop, listenfd, EV_READ | EV_PERSIST, &onConnect, ctx);
+			enforce(event_add(ctx.listenEvent, null) == 0,
+				"Error scheduling connection event on the event loop.");
+			ret.addContext(ctx);
+		}
+
+		if (options & TcpListenOptions.distribute) runWorkerTaskDist(&setupConnectionHandler);
+		else setupConnectionHandler();
 		
-		// Add an event to wait for connections
-		auto ctx = TcpContextAlloc.alloc(m_core, m_eventLoop, listenfd, null, bind_addr);
-		ctx.connectionCallback = connection_callback;
-		ctx.listenEvent = event_new(m_eventLoop, listenfd, EV_READ | EV_PERSIST, &onConnect, ctx);
-		enforce(event_add(ctx.listenEvent, null) == 0,
-			"Error scheduling connection event on the event loop.");
-		
-		return new LibeventTcpListener(ctx);
+		return ret;
 	}
 
 	UdpConnection listenUdp(ushort port, string bind_address = "0.0.0.0")
@@ -251,9 +266,9 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 		return new Libevent2UdpConnection(bindaddr, this);
 	}
 
-	Libevent2Signal createSignal()
+	Libevent2ManualEvent createManualEvent()
 	{
-		return new Libevent2Signal(this);
+		return new Libevent2ManualEvent;
 	}
 
 	Libevent2Timer createTimer(void delegate() callback)
@@ -292,30 +307,39 @@ logDebug("dnsresolve ret %s", dnsinfo.status);
 	}
 }
 
-class Libevent2Signal : Signal {
+class Libevent2ManualEvent : ManualEvent {
 	private {
-		Libevent2Driver m_driver;
-		event* m_event;
-		bool[Task] m_listeners;
-		int m_emitCount = 0;
+		struct ThreadSlot {
+			Libevent2Driver driver;
+			deimos.event2.event.event* event;
+			bool[Task] tasks;
+		}
+		shared int m_emitCount = 0;
+		__gshared core.sync.mutex.Mutex m_mutex;
+		__gshared ThreadSlot[Thread] m_waiters;
 	}
 
-	this(Libevent2Driver driver)
+	this()
 	{
-		m_driver = driver;
-		m_event = event_new(m_driver.eventLoop, -1, EV_PERSIST, &onSignalTriggered, cast(void*)this);
-		event_add(m_event, null);
+		m_mutex = new core.sync.mutex.Mutex;
 	}
 
 	~this()
 	{
-		if( !s_alreadyDeinitialized )
-			event_free(m_event);
+		if( !s_alreadyDeinitialized ){
+			// FIXME: this is illegal (accessing GC memory)
+			foreach (ts; m_waiters)
+				event_free(ts.event);
+		}
 	}
 
 	void emit()
 	{
-		event_active(m_event, 0, 0);
+		atomicOp!"+="(m_emitCount, 1);
+		synchronized (m_mutex) {
+			foreach (sl; m_waiters)
+				event_active(sl.event, 0, 0);
+		}
 	}
 
 	void wait()
@@ -323,49 +347,78 @@ class Libevent2Signal : Signal {
 		wait(m_emitCount);
 	}
 
-	void wait(int reference_emit_count)
+	int wait(int reference_emit_count)
 	{
 		assert(!isOwner());
 		auto self = Fiber.getThis();
 		acquire();
 		scope(exit) release();
-		while( m_emitCount == reference_emit_count )
-			m_driver.m_core.yieldForEvent();
+		auto ec = this.emitCount;
+		while( ec == reference_emit_count ){
+			getThreadLibeventDriverCore().yieldForEvent();
+			ec = this.emitCount;
+		}
+		return ec;
 	}
 
 	void acquire()
 	{
-		m_listeners[Task.getThis()] = true;
+		auto task = Task.getThis();
+		auto thread = task.thread;
+		synchronized (m_mutex) {
+			if (thread !in m_waiters) {
+				ThreadSlot slot;
+				slot.driver = cast(Libevent2Driver)getEventDriver();
+				slot.event = event_new(slot.driver.eventLoop, -1, EV_PERSIST, &onSignalTriggered, cast(void*)this);
+				event_add(slot.event, null);
+				m_waiters[thread] = slot;
+			}
+			assert(task !in m_waiters[thread].tasks, "Double acquisition of signal.");
+			m_waiters[thread].tasks[task] = true;
+		}
 	}
 
 	void release()
 	{
 		auto self = Task.getThis();
-		if( isOwner() )
-			m_listeners.remove(self);
+		synchronized (m_mutex) {
+			assert(self.thread in m_waiters && self in m_waiters[self.thread].tasks,
+				"Releasing non-acquired signal.");
+			m_waiters[self.thread].tasks.remove(self);
+		}
 	}
 
 	bool isOwner()
 	{
-		return (Task.getThis() in m_listeners) !is null;
+		auto self = Task.getThis();
+		synchronized (m_mutex) {
+			if (self.thread !in m_waiters) return false;
+			return (self in m_waiters[self.thread].tasks) !is null;
+		}
 	}
 
-	@property int emitCount() const { return m_emitCount; }
+	@property int emitCount() const { return atomicLoad(m_emitCount); }
 
 	private static nothrow extern(C)
 	void onSignalTriggered(evutil_socket_t, short events, void* userptr)
 	{
-		auto sig = cast(Libevent2Signal)userptr;
-
-		sig.m_emitCount++;
-
-		bool[Task] lst;
 		try {
-			lst = sig.m_listeners.dup;
-			foreach( l, _; lst )
-				sig.m_driver.m_core.resumeTask(l);
-		} catch( Throwable e ){
+			auto sig = cast(Libevent2ManualEvent)userptr;
+			auto thread = Thread.getThis();
+			auto core = getThreadLibeventDriverCore();
+
+			bool[Task] lst;
+			synchronized (sig.m_mutex) {
+				assert(thread in sig.m_waiters);
+				lst = sig.m_waiters[thread].tasks.dup;
+			}
+
+			foreach (l; lst.byKey)
+				core.resumeTask(l);
+		} catch (Exception e) {
 			logError("Exception while handling signal event: %s", e.msg);
+			try logDiagnostic("Full error: %s", sanitize(e.msg));
+			catch(Exception) {}
 			debug assert(false);
 		}
 	}
@@ -468,7 +521,7 @@ class Libevent2Timer : Timer {
 			if( tm.m_callback ) runTask(tm.m_callback);
 		} catch( Throwable e ){
 			logError("Exception while handling timer event: %s", e.msg);
-			try logDebug("Full exception: %s", sanitize(e.toString())); catch {}
+			try logDiagnostic("Full exception: %s", sanitize(e.toString())); catch {}
 			debug assert(false);
 		}
 	}
@@ -581,7 +634,7 @@ class Libevent2UdpConnection : UdpConnection {
 			}
 			if( ret < 0 ){
 				auto err = getLastSocketError();
-				logDebug("UDP recv err: %s", err);
+				logDiagnostic("UDP recv err: %s", err);
 				enforce(err == EWOULDBLOCK, "Error receiving UDP packet.");
 			}
 			m_ctx.core.yieldForEvent();
@@ -630,13 +683,13 @@ private int getLastSocketError()
 }
 
 struct LevMutex {
-	FreeListRef!Mutex mutex;
-	FreeListRef!ReadWriteMutex rwmutex;
+	vibe.utils.memory.FreeListRef!(core.sync.mutex.Mutex) mutex;
+	vibe.utils.memory.FreeListRef!ReadWriteMutex rwmutex;
 }
 alias FreeListObjectAlloc!(LevMutex, false, true) LevMutexAlloc;
 
 struct LevCondition {
-	FreeListRef!Condition cond;
+	vibe.utils.memory.FreeListRef!Condition cond;
 	LevMutex* mutex;
 }
 alias FreeListObjectAlloc!(LevCondition, false, true) LevConditionAlloc;
@@ -684,7 +737,7 @@ private nothrow extern(C)
 		try {
 			auto ret = LevMutexAlloc.alloc();
 			if( locktype == EVTHREAD_LOCKTYPE_READWRITE ) ret.rwmutex = FreeListRef!ReadWriteMutex();
-			else ret.mutex = FreeListRef!Mutex();
+			else ret.mutex = FreeListRef!(core.sync.mutex.Mutex)();
 			return ret;
 		} catch( Throwable th ){
 			logWarn("Exception in lev_alloc_mutex: %s", th.msg);
@@ -797,4 +850,6 @@ private nothrow extern(C)
 			return 0;
 		}
 	}
+}
+
 }

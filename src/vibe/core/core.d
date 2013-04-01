@@ -1,7 +1,7 @@
 ﻿/**
 	This module contains the core functionality of the vibe framework.
 
-	Copyright: © 2012 RejectedSoftware e.K.
+	Copyright: © 2012-2013 RejectedSoftware e.K.
 	License: Subject to the terms of the MIT license, as written in the included LICENSE.txt file.
 	Authors: Sönke Ludwig
 */
@@ -13,9 +13,11 @@ import vibe.core.log;
 import vibe.utils.array;
 import std.algorithm;
 import std.conv;
+import std.encoding;
 import std.exception;
 import std.functional;
 import std.range;
+import std.string;
 import std.variant;
 import core.sync.mutex;
 import core.stdc.stdlib;
@@ -66,18 +68,22 @@ int runEventLoop()
 	return 0;
 }
 
-deprecated int start() { return runEventLoop(); }
-
 /**
 	Stops the currently running event loop.
 
 	Calling this function will cause the event loop to stop event processing and
 	the corresponding call to runEventLoop() will return to its caller.
 */
-void exitEventLoop()
+void exitEventLoop(bool shutdown_workers = true)
 {
 	assert(s_eventLoopRunning);
 	getEventDriver().exitEventLoop();
+	if (shutdown_workers) {
+		synchronized (st_workerTaskMutex)
+			foreach (ref ctx; st_workerThreads)
+				ctx.exit = true;
+		st_workerTaskSignal.emit();
+	}
 }
 
 /**
@@ -92,8 +98,18 @@ int processEvents()
 
 /**
 	Sets a callback that is called whenever no events are left in the event queue.
+
+	The callback delegate is called whenever all events in the event queue have been
+	processed. Returning true from the callback will cause another idle event to
+	be triggered immediately after processing any events that have arrived in the
+	meantime. Returning fals will instead wait until another event has arrived first.
 */
 void setIdleHandler(void delegate() del)
+{
+	s_idleHandler = { del(); return false; };
+}
+/// ditto
+void setIdleHandler(bool delegate() del)
 {
 	s_idleHandler = del;
 }
@@ -139,6 +155,22 @@ void runWorkerTask(void delegate() task)
 	if( st_workerTaskMutex ){
 		synchronized(st_workerTaskMutex){
 			st_workerTasks ~= task;
+		}
+		st_workerTaskSignal.emit();
+	} else {
+		runTask(task);
+	}
+}
+
+/**
+	Runs a task in all worker threads concurrently.
+*/
+void runWorkerTaskDist(void delegate() task)
+{
+	if( st_workerTaskMutex ){
+		synchronized(st_workerTaskMutex){
+			foreach(ref ctx; st_workerThreads)
+				ctx.taskQueue ~= task;
 		}
 		st_workerTaskSignal.emit();
 	} else {
@@ -198,6 +230,14 @@ Timer setTimer(Duration timeout, void delegate() callback, bool periodic = false
 	auto tm = getEventDriver().createTimer(callback);
 	tm.rearm(timeout, periodic);
 	return tm;
+}
+
+/**
+	Creates a new timer without arming it.
+*/
+Timer createTimer(void delegate() callback)
+{
+	return getEventDriver().createTimer(callback);
 }
 
 /**
@@ -268,13 +308,21 @@ void setTaskStackSize(size_t sz)
 */
 void enableWorkerThreads()
 {
+	import core.cpuid;
+
+	setupDriver();
+
 	assert(st_workerTaskMutex is null);
 
-	st_workerTaskMutex = new Mutex;	
+	st_workerTaskMutex = new core.sync.mutex.Mutex;	
 
-	foreach( i; 0 .. 4 ){
+	st_workerTaskSignal = getEventDriver().createManualEvent();
+	assert(!st_workerTaskSignal.isOwner());
+
+	foreach (i; 0 .. threadsPerCPU) {
 		auto thr = new Thread(&workerThreadFunc);
-		thr.name = "Vibe Task Worker";
+		thr.name = format("Vibe Task Worker #%s", i);
+		st_workerThreads[thr] = WorkerThreadContext();
 		thr.start();
 	}
 }
@@ -282,7 +330,7 @@ void enableWorkerThreads()
 /**
 	A version string representing the current vibe version
 */
-enum VibeVersionString = "0.7.11";
+enum VibeVersionString = "0.7.14";
 
 
 /**************************************************************************************************/
@@ -303,37 +351,42 @@ private class CoreTask : TaskFiber {
 
 	private void run()
 	{
-		scope(failure) logError("CoreTaskFiber was terminated unexpectedly.");
+		try {
+			while(true){
+				while( !m_taskFunc ){
+					try {
+						s_core.yieldForEvent();
+					} catch( Exception e ){
+						logWarn("CoreTaskFiber was resumed with exception but without active task!");
+						logDiagnostic("Full error: %s", e.toString().sanitize());
+					}
+				}
 
-		while(true){
-			while( !m_taskFunc ){
+				auto task = m_taskFunc;
+				m_taskFunc = null;
 				try {
-					s_core.yieldForEvent();
+					m_running = true;
+					scope(exit) m_running = false;
+					logTrace("entering task.");
+					task();
+					logTrace("exiting task.");
 				} catch( Exception e ){
-					logWarn("CorTaskFiber was resumed with exception but without active task!");
+					import std.encoding;
+					logCritical("Task terminated with uncaught exception: %s", e.msg);
 					logDebug("Full error: %s", e.toString().sanitize());
 				}
-			}
+				resetLocalStorage();
 
-			auto task = m_taskFunc;
-			m_taskFunc = null;
-			try {
-				m_running = true;
-				scope(exit) m_running = false;
-				logTrace("entering task.");
-				task();
-				logTrace("exiting task.");
-			} catch( Exception e ){
-				logError("Task terminated with exception: %s", e.toString());
+				foreach( t; m_yielders ) s_core.resumeTask(t);
+				
+				// make the fiber available for the next task
+				if( s_availableFibers.length <= s_availableFibersCount )
+					s_availableFibers.length = 2*s_availableFibers.length;
+				s_availableFibers[s_availableFibersCount++] = this;
 			}
-			resetLocalStorage();
-
-			foreach( t; m_yielders ) s_core.resumeTask(t);
-			
-			// make the fiber available for the next task
-			if( s_availableFibers.length <= s_availableFibersCount )
-				s_availableFibers.length = 2*s_availableFibers.length;
-			s_availableFibers[s_availableFibersCount++] = this;
+		} catch(Throwable th){
+			logCritical("CoreTaskFiber was terminated unexpectedly: %s", th.msg);
+			logDebug("Full error: %s", th.toString().sanitize());
 		}
 	}
 
@@ -411,6 +464,7 @@ private class VibeDriverCore : DriverCore {
 	{
 		CoreTask ctask = cast(CoreTask)task.fiber;
 		assert(ctask.state == Fiber.State.HOLD, "Resuming fiber that is " ~ (ctask.state == Fiber.State.TERM ? "terminated" : "running"));
+		assert(ctask.thread is Thread.getThis(), "Resuming task in foreign thread.");
 
 		assert(initial_resume || task.running, "Resuming terminated task.");
 
@@ -429,6 +483,7 @@ private class VibeDriverCore : DriverCore {
 
 	void notifyIdle()
 	{
+		again:
 		while(true){
 			Task[] tmp;
 			swap(s_yieldedTasks, tmp);
@@ -437,7 +492,11 @@ private class VibeDriverCore : DriverCore {
 			processEvents();
 		}
 
-		if( s_idleHandler ) s_idleHandler();
+		if (s_idleHandler)
+			if (s_idleHandler()){
+				processEvents();
+				goto again;
+			}
 
 		if( !m_ignoreIdleForGC && m_gcTimer ){
 			m_gcTimer.rearm(m_gcCollectTimeout);
@@ -454,25 +513,31 @@ private class VibeDriverCore : DriverCore {
 	}
 }
 
+private struct WorkerThreadContext {
+	void delegate()[] taskQueue;
+	bool exit = false;
+}
 
 /**************************************************************************************************/
 /* private functions                                                                              */
 /**************************************************************************************************/
 
 private {
+	__gshared VibeDriverCore s_core;
 	__gshared size_t s_taskStackSize = 16*4096;
+
+	__gshared core.sync.mutex.Mutex st_workerTaskMutex;
+	__gshared void delegate()[] st_workerTasks;
+	__gshared WorkerThreadContext[Thread] st_workerThreads;
+	__gshared ManualEvent st_workerTaskSignal;
+
+	bool delegate() s_idleHandler;
 	Task[] s_yieldedTasks;
 	bool s_eventLoopRunning = false;
-	__gshared VibeDriverCore s_core;
 	Variant[string] s_taskLocalStorageGlobal; // for use outside of a task
 	CoreTask[] s_availableFibers;
 	size_t s_availableFibersCount;
 	size_t s_fiberCount;
-	void delegate() s_idleHandler;
-
-	__gshared Mutex st_workerTaskMutex;
-	__gshared void delegate()[] st_workerTasks;
-	__gshared Signal st_workerTaskSignal;
 }
 
 // per process setup
@@ -486,6 +551,8 @@ shared static this()
 		WSAStartup(0x0202, &data);
 
 	}
+
+	initializeLogModule();
 	
 	logTrace("create driver core");
 	
@@ -546,17 +613,6 @@ static this()
 	assert(s_core !is null);
 
 	setupDriver();
-
-	if( st_workerTaskMutex ){
-		synchronized(st_workerTaskMutex)
-		{
-			if( !st_workerTaskSignal ){
-				st_workerTaskSignal = getEventDriver().createSignal();
-				st_workerTaskSignal.release();
-				assert(!st_workerTaskSignal.isOwner());
-			}
-		}
-	}
 }
 
 static ~this()
@@ -572,7 +628,8 @@ private void setupDriver()
 	version(VibeWin32Driver) setEventDriver(new Win32EventDriver(s_core));
 	else version(VibeWinrtDriver) setEventDriver(new WinRtEventDriver(s_core));
 	else version(VibeLibevDriver) setEventDriver(new LibevDriver(s_core));
-	else setEventDriver(new Libevent2Driver(s_core));
+	else version(VibeLibeventDriver) setEventDriver(new Libevent2Driver(s_core));
+	else static assert(false, "No event driver is available. Please specify a -version=Vibe*Driver for the desired driver.");
 }
 
 private void workerThreadFunc()
@@ -588,6 +645,8 @@ private void handleWorkerTasks()
 	logDebug("worker task enter");
 	yield();
 
+	auto thisthr = Thread.getThis();
+
 	logDebug("worker task loop enter");
 	assert(!st_workerTaskSignal.isOwner());
 	while(true){
@@ -595,17 +654,31 @@ private void handleWorkerTasks()
 		auto emit_count = st_workerTaskSignal.emitCount;
 		synchronized(st_workerTaskMutex){
 			logDebug("worker task check");
-			if( st_workerTasks.length ){
+			if (st_workerThreads[thisthr].exit) {
+				if (st_workerThreads[thisthr].taskQueue.length > 0)
+					logWarn("Worker thread shuts down with specific worker tasks left in its queue.");
+				if (st_workerThreads.length == 1 && st_workerTasks.length > 0)
+					logWarn("Worker threads shut down with worker tasks still left in the queue.");
+				st_workerThreads.remove(thisthr);
+				getEventDriver().exitEventLoop();
+				break;
+			}
+			if (!st_workerTasks.empty) {
 				logDebug("worker task got");
 				t = st_workerTasks.front;
 				st_workerTasks.popFront();
+			} else if (!st_workerThreads[thisthr].taskQueue.empty) {
+				logDebug("worker task got specific");
+				t = st_workerThreads[thisthr].taskQueue.front;
+				st_workerThreads[thisthr].taskQueue.popFront();
 			}
 		}
 		assert(!st_workerTaskSignal.isOwner());
-		if( t ) runTask(t);
+		if (t) runTask(t);
 		else st_workerTaskSignal.wait(emit_count);
 		assert(!st_workerTaskSignal.isOwner());
 	}
+	logDebug("worker task exit");
 }
 
 private extern(C) nothrow

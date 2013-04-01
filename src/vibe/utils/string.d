@@ -11,6 +11,7 @@ public import std.string;
 
 import std.algorithm;
 import std.array;
+import std.ascii;
 import std.format;
 import std.uni;
 import std.utf;
@@ -55,6 +56,7 @@ string stripUTF8Bom(string str)
 /**
 	Joins an array of strings using 'linesep' as the line separator (\n by default).
 */
+deprecated("Please use std.array.join instead.")
 string joinLines(string[] strs, string linesep = "\n")
 {
 	auto len = 0;
@@ -76,10 +78,27 @@ string joinLines(string[] strs, string linesep = "\n")
 */
 bool allOf(string str, string chars)
 {
-	foreach( ch; str )
-		if( chars.countUntil(ch) < 0 )
+	foreach (ch; str)
+		if (!chars.canFind(ch))
 			return false;
 	return true;
+}
+
+ptrdiff_t indexOfCT(Char)(in Char[] s, dchar c, CaseSensitive cs = CaseSensitive.yes)
+{
+	if (__ctfe) {
+		if (cs == CaseSensitive.yes) {
+			foreach (i, dchar ch; s)
+				if (ch == c)
+					return i;
+		} else {
+			c = std.uni.toLower(c);
+			foreach (i, dchar ch; s)
+				if (std.uni.toLower(ch) == c)
+					return i;
+		}
+		return -1;
+	} else return std.string.indexOf(s, c, cs);
 }
 
 /**
@@ -87,22 +106,15 @@ bool allOf(string str, string chars)
 */
 bool anyOf(string str, string chars)
 {
-	foreach( ch; str )
-		if( chars.countUntil(ch) >= 0 )
+	foreach (ch; str)
+		if (chars.canFind(ch))
 			return true;
 	return false;
 }
 
 /// ASCII alpha character check
-bool isAlpha(char ch)
-{
-	switch( ch ){
-		default: return false;
-		case 'a': .. case 'z'+1: break;
-		case 'A': .. case 'Z'+1: break;
-	}
-	return true;
-}
+deprecated("Please use std.ascii.isAlpha instead.")
+alias isAlpha = std.ascii.isAlpha;
 
 /// ASCII whitespace trimming (space and tab)
 string stripLeftA(string s)
@@ -129,13 +141,14 @@ string stripA(string s)
 /// Finds the first occurence of any of the characters in `chars`
 sizediff_t countUntilAny(string str, string chars)
 {
-	foreach( i, char ch; str )
-		if( chars.countUntil(ch) >= 0 )
+	foreach (i, char ch; str)
+		if (chars.canFind(ch))
 			return i;
 	return -1;
 }
 
 /// Formats a string using formattedWrite() and returns it.
+deprecated("Please use std.string.format instead.")
 string formatString(ARGS...)(string format, ARGS args)
 {
 	auto dst = appender!string();
@@ -169,8 +182,8 @@ int icmp2(string a, string b)
 			dchar acp = decode(a, i);
 			dchar bcp = decode(b, j);
 			if( acp != bcp ){
-				acp = toLower(acp);
-				bcp = toLower(bcp);
+				acp = std.uni.toLower(acp);
+				bcp = std.uni.toLower(bcp);
 				if( acp < bcp ) return -1;
 				else if( acp > bcp ) return 1;
 			}

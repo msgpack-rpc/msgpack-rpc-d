@@ -30,7 +30,7 @@ import vibe.utils.string;
 import vibe.core.file;
 
 import core.vararg;
-import std.algorithm : countUntil, map, min;
+import std.algorithm : canFind, map, min;
 import std.array;
 import std.conv;
 import std.datetime;
@@ -84,11 +84,11 @@ void listenHttp(HttpServerSettings settings, HttpServerRequestDelegate request_h
 
 	g_contexts ~= ctx;
 
-	if( !s_listenersStarted ) return;
+	if( !s_listenersStarted && !settings.disableDistHost ) return;
 
 	// if a VibeDist host was specified on the command line, register there instead of listening
 	// directly.
-	if( s_distHost.length ){
+	if( s_distHost.length && !settings.disableDistHost ){
 		listenHttpDist(settings, request_handler, s_distHost, s_distPort);
 	} else {
 		listenHttpPlain(settings, request_handler);
@@ -100,25 +100,26 @@ void listenHttp(HttpServerSettings settings, HttpServerRequestFunction request_h
 	listenHttp(settings, toDelegate(request_handler));
 }
 /// ditto
-void listenHttp(HttpServerSettings settings, IHttpServerRequestHandler request_handler)
+void listenHttp(HttpServerSettings settings, HttpServerRequestHandler request_handler)
 {
 	listenHttp(settings, &request_handler.handleRequest);
 }
 
 
 /**
-	Starts a HTTP server listening on the specified port.
+	[private] Starts a HTTP server listening on the specified port.
 
 	This is the same as listenHttp() except that it does not use a VibeDist host for
 	remote listening, even if specified on the command line.
 */
-void listenHttpPlain(HttpServerSettings settings, HttpServerRequestDelegate request_handler)
+private void listenHttpPlain(HttpServerSettings settings, HttpServerRequestDelegate request_handler)
 {
 	static void doListen(HttpServerSettings settings, HTTPServerListener listener, string addr)
 	{
 		try {
-			listenTcp(settings.port, (TcpConnection conn){ handleHttpConnection(conn, listener); }, addr);
-			logInfo("Listening for HTTP%s requests on %s:%s", settings.sslKeyFile.length || settings.sslCertFile.length ? "S" : "", addr, settings.port);
+			bool dist = (settings.options & HttpServerOption.distribute) != 0;
+			listenTcp(settings.port, (TcpConnection conn){ handleHttpConnection(conn, listener); }, addr, dist ? TcpListenOptions.distribute : TcpListenOptions.defaults);
+			logInfo("Listening for HTTP%s requests on %s:%s", settings.sslContext ? "S" : "", addr, settings.port);
 		} catch( Exception e ) logWarn("Failed to listen on %s:%s", addr, settings.port);
 	}
 
@@ -128,13 +129,12 @@ void listenHttpPlain(HttpServerSettings settings, HttpServerRequestDelegate requ
 		bool found_listener = false;
 		foreach( lst; g_listeners ){
 			if( lst.bindAddress == addr && lst.bindPort == settings.port ){
-				enforce(settings.sslKeyFile == lst.sslKeyFile
-					&& settings.sslCertFile == lst.sslCertFile,
+				enforce(settings.sslContext is lst.sslContext,
 					"A HTTP server is already listening on "~addr~":"~to!string(settings.port)~
-					" but the SSL mode differs.");
-				foreach( ctx; g_contexts ){
-					if( ctx.settings.port != settings.port ) continue;
-					if( countUntil(ctx.settings.bindAddresses, addr) < 0 ) continue;
+					" but the SSL context differs.");
+				foreach (ctx; g_contexts) {
+					if (ctx.settings.port != settings.port) continue;
+					if (!ctx.settings.bindAddresses.canFind(addr)) continue;
 					/*enforce(ctx.settings.hostName != settings.hostName,
 						"A server with the host name '"~settings.hostName~"' is already "
 						"listening on "~addr~":"~to!string(settings.port)~".");*/
@@ -144,11 +144,27 @@ void listenHttpPlain(HttpServerSettings settings, HttpServerRequestDelegate requ
 			}
 		}
 		if( !found_listener ){
-			auto listener = HTTPServerListener(addr, settings.port, settings.sslCertFile, settings.sslKeyFile);
+			if( (settings.sslKeyFile || settings.sslCertFile) && !settings.sslContext ){
+				logDebug("Creating SSL context...");
+				assert(settings.sslCertFile.length && settings.sslKeyFile.length);
+				settings.sslContext = new SslContext(settings.sslCertFile, settings.sslKeyFile);
+				logDebug("... done");
+			}
+			auto listener = HTTPServerListener(addr, settings.port, settings.sslContext);
 			g_listeners ~= listener;
 			doListen(settings, listener, addr); // DMD BUG 2043
 		}
 	}
+}
+/// ditto
+void listenHttpPlain(HttpServerSettings settings, HttpServerRequestFunction request_handler)
+{
+	listenHttpPlain(settings, toDelegate(request_handler));
+}
+/// ditto
+void listenHttpPlain(HttpServerSettings settings, HttpServerRequestHandler request_handler)
+{
+	listenHttpPlain(settings, &request_handler.handleRequest);
 }
 
 
@@ -232,10 +248,14 @@ alias void delegate(HttpServerRequest req, HttpServerResponse res) HttpServerReq
 /// Static function based request handler
 alias void function(HttpServerRequest req, HttpServerResponse res) HttpServerRequestFunction;
 /// Interface for class based request handlers
-interface IHttpServerRequestHandler {
+interface HttpServerRequestHandler {
 	/// Handles incoming HTTP requests
 	void handleRequest(HttpServerRequest req, HttpServerResponse res);
 }
+
+/// Compatibility alias.
+deprecated("Please use HttpServerRequestHandler instead.")
+alias HttpServerRequestHandler IHttpServerRequestHandler;
 
 /// Aggregates all information about an HTTP error status.
 class HttpServerErrorInfo {
@@ -258,19 +278,36 @@ alias void delegate(HttpServerRequest req, HttpServerResponse res, HttpServerErr
 	Disabling unneeded features can speed up the server or reduce its memory usage.
 */
 enum HttpServerOption {
-	None                      = 0,
+	none                      = 0,
 	/// Fills the .path, .queryString fields in the request
-	ParseURL                  = 1<<0,
+	parseURL                  = 1<<0,
 	/// Fills the .query field in the request
-	ParseQueryString          = 1<<1 | ParseURL,
+	parseQueryString          = 1<<1 | parseURL,
 	/// Fills the .form field in the request
-	ParseFormBody             = 1<<2,
+	parseFormBody             = 1<<2,
 	/// Fills the .json field in the request
-	ParseJsonBody             = 1<<3,
+	parseJsonBody             = 1<<3,
 	/// Enables use of the .nextPart() method in the request
-	ParseMultiPartBody        = 1<<4, // todo
+	parseMultiPartBody        = 1<<4, // todo
 	/// Fills the .cookies field in the request
-	ParseCookies              = 1<<5,
+	parseCookies              = 1<<5,
+	/// Distributes request processing among worker threads
+	distribute                = 1<<6,
+
+	/// deprecated
+	None = none,
+	/// deprecated
+	ParseURL = parseURL,
+	/// deprecated
+	ParseQueryString = parseQueryString,
+	/// deprecated
+	ParseFormBody = parseFormBody,
+	/// deprecated
+	ParseJsonBody = parseJsonBody,
+	/// deprecated
+	ParseMultiPartBody = parseMultiPartBody,
+	/// deprecated
+	ParseCookies = parseCookies
 }
 
 
@@ -291,7 +328,7 @@ class HttpServerSettings {
 		
 		By default, the server will listen on all IPv4 and IPv6 interfaces.
 	*/
-	string[] bindAddresses = ["0.0.0.0", "::"];
+	string[] bindAddresses = ["::", "0.0.0.0"];
 
 	/** Determines the server host name.
 
@@ -306,12 +343,12 @@ class HttpServerSettings {
 		load in case of invalid or unwanted requests (DoS).
 	*/
 	HttpServerOption options =
-		HttpServerOption.ParseURL |
-		HttpServerOption.ParseQueryString |
-		HttpServerOption.ParseFormBody |
-		HttpServerOption.ParseJsonBody |
-		HttpServerOption.ParseMultiPartBody |
-		HttpServerOption.ParseCookies;
+		HttpServerOption.parseURL |
+		HttpServerOption.parseQueryString |
+		HttpServerOption.parseFormBody |
+		HttpServerOption.parseJsonBody |
+		HttpServerOption.parseMultiPartBody |
+		HttpServerOption.parseCookies;
 	
 	/// Time of a request after which the connection is closed with an error; not supported yet
 	Duration maxRequestTime = dur!"seconds"(0);
@@ -331,10 +368,16 @@ class HttpServerSettings {
 	/// Sets a custom handler for displaying error pages for HTTP errors
 	HttpServerErrorPageHandler errorPageHandler = null;
 
-	/// If set, a HTTPS server will be started instead of plain HTTP
+	/** If set, a HTTPS server will be started instead of plain HTTP
+
+		Please use sslContext in new code instead of setting the key/cert file. Those fileds
+		will be deprecated at some point.
+	*/
 	string sslCertFile;
 	/// ditto
 	string sslKeyFile;
+	/// ditto
+	SslContext sslContext;
 
 	/// Session management is enabled if a session store instance is provided
 	SessionStore sessionStore;
@@ -370,6 +413,9 @@ class HttpServerSettings {
 		}
 		return ret;
 	}
+
+	/// Disable support for VibeDist and instead start listening immediately.
+	bool disableDistHost = false;
 }
 
 
@@ -377,6 +423,11 @@ class HttpServerSettings {
 	Represents a HTTP request as received by the server side.
 */
 final class HttpServerRequest : HttpRequest {
+	private {
+		SysTime m_timeCreated;
+		FixedAppender!(string, 31) m_dateAppender;
+	}
+
 	public {
 		/// The IP address of the client
 		string peer;
@@ -386,37 +437,42 @@ final class HttpServerRequest : HttpRequest {
 
 		/** The _path part of the URL.
 
-			Remarks: This field is only set if HttpServerOption.ParseURL is set.
+			Remarks: This field is only set if HttpServerOption.parseURL is set.
 		*/
 		string path;
 
 		/** The user name part of the URL, if present.
 
-			Remarks: This field is only set if HttpServerOption.ParseURL is set.
+			Remarks: This field is only set if HttpServerOption.parseURL is set.
 		*/
 		string username;
 
 		/** The _password part of the URL, if present.
 
-			Remarks: This field is only set if HttpServerOption.ParseURL is set.
+			Remarks: This field is only set if HttpServerOption.parseURL is set.
 		*/
 		string password;
 
 		/** The _query string part of the URL.
 
-			Remarks: This field is only set if HttpServerOption.ParseURL is set.
+			Remarks: This field is only set if HttpServerOption.parseURL is set.
 		*/
 		string queryString;
 
 		/** Contains the list of _cookies that are stored on the client.
 
-			Remarks: This field is only set if HttpServerOption.ParseCookies is set.
+			Note that the a single cookie name may occur multiple times if multiple
+			cookies have that name but different paths or domains that all match
+			the request URI. By default, the first cookie will be returned, which is
+			the or one of the cookies with the closest path match.
+
+			Remarks: This field is only set if HttpServerOption.parseCookies is set.
 		*/
-		string[string] cookies;
+		CookieValueMap cookies;
 		
 		/** Contains all _form fields supplied using the _query string.
 
-			Remarks: This field is only set if HttpServerOption.ParseQueryString is set.
+			Remarks: This field is only set if HttpServerOption.parseQueryString is set.
 		*/
 		string[string] query;
 
@@ -431,7 +487,7 @@ final class HttpServerRequest : HttpRequest {
 		/** Supplies the request body as a stream.
 
 			If the body has not already been read because one of the body parsers has
-			processed it (e.g. HttpServerOption.ParseFormBody), it can be read from
+			processed it (e.g. HttpServerOption.parseFormBody), it can be read from
 			this stream.
 		*/
 		InputStream bodyReader;
@@ -439,7 +495,7 @@ final class HttpServerRequest : HttpRequest {
 		/** Contains the parsed Json for a JSON request.
 
 			Remarks:
-				This field is only set if HttpServerOption.ParseJsonBody is set.
+				This field is only set if HttpServerOption.parseJsonBody is set.
 
 				A JSON request must have the Content-Type "application/json".
 		*/
@@ -448,7 +504,7 @@ final class HttpServerRequest : HttpRequest {
 		/** Contains the parsed parameters of a HTML POST _form request.
 
 			Remarks:
-				This field is only set if HttpServerOption.ParseFormBody is set.
+				This field is only set if HttpServerOption.parseFormBody is set.
 
 				A form request must either have the Content-Type
 				"application/x-www-form-urlencoded" or "multipart/form-data".
@@ -458,7 +514,7 @@ final class HttpServerRequest : HttpRequest {
 		/** Contains information about any uploaded file for a HTML _form request.
 
 			Remarks:
-				This field is only set if HttpServerOption.ParseFormBody is set amd
+				This field is only set if HttpServerOption.parseFormBody is set amd
 				if the Content-Type is "multipart/form-data".
 		*/
 		FilePart[string] files;
@@ -469,17 +525,17 @@ final class HttpServerRequest : HttpRequest {
 			on a previous response and if the client has sent back the matching
 			cookie.
 
-			Remarks: Requires the HttpServerOption.ParseCookies option.
+			Remarks: Requires the HttpServerOption.parseCookies option.
 		*/
 		Session session;
 	}
-	private {
-		SysTime m_timeCreated;
-	}
 
-	this()
+
+	this(SysTime time)
 	{
-		m_timeCreated = Clock.currTime().toUTC();
+		m_timeCreated = time.toUTC();
+		writeRFC822DateTimeString(m_dateAppender, time);
+		this.headers["Date"] = m_dateAppender.data();
 	}
 
 	/** Time when this request started processing.
@@ -571,29 +627,42 @@ final class HttpServerResponse : HttpResponse {
 		bodyWriter.write(data);
 	}
 	/// ditto
-	void writeBody(string data, string content_type = "text/plain")
+	void writeBody(string data, string content_type = "text/plain; charset=UTF-8")
 	{
 		writeBody(cast(ubyte[])data, content_type);
 	}
 	
 	/** Writes the whole response body at once, without doing any further encoding.
 
-		The called has to make sure that the appropriate headers are set correctly
+		The caller has to make sure that the appropriate headers are set correctly
 		(i.e. Content-Type and Content-Encoding).
+
+		Note that the version taking a RandomAccessStream may perform additional
+		optimizations such as sending a file directly from the disk to the
+		network card using a DMA transfer.
+
 	*/
 	void writeRawBody(RandomAccessStream stream)
 	{
 		assert(!m_headerWritten, "A body was already written!");
-
 		writeHeader();
-
 		if( m_isHeadResponse ) return;
 
 		auto bytes = stream.size - stream.tell();
-		if( "Transfer-Encoding" in headers ) headers.remove("Transfer-Encoding");
-		headers["Content-Length"] = formatAlloc(m_requestAlloc, "%d", bytes);
 		m_conn.write(stream);
 		m_countingWriter.increment(bytes);
+	}
+	/// ditto
+	void writeRawBody(InputStream stream, size_t num_bytes = 0)
+	{
+		assert(!m_headerWritten, "A body was already written!");
+		writeHeader();
+		if (m_isHeadResponse) return;
+
+		if (num_bytes > 0) {
+			m_conn.write(stream, num_bytes);
+			m_countingWriter.increment(num_bytes);
+		} else  m_countingWriter.write(stream, num_bytes);
 	}
 
 	/// Writes a JSON message with the specified status
@@ -605,7 +674,7 @@ final class HttpServerResponse : HttpResponse {
 		}
 
 		statusCode = status;
-		writeBody(cast(ubyte[])serializeToJson(data).toString(), "application/json");
+		writeBody(cast(ubyte[])serializeToJson(data).toString(), "application/json; charset=UTF-8");
 	}
 
 	/**
@@ -698,9 +767,11 @@ final class HttpServerResponse : HttpResponse {
 	}
 
 	/// Sets the specified cookie value.
-	Cookie setCookie(string name, string value) {
+	Cookie setCookie(string name, string value, string path = "/")
+	{
 		auto cookie = new Cookie();
-		cookie.setValue(value);
+		cookie.path = path;
+		cookie.value = value;
 		cookies[name] = cookie;
 		return cookie;
 	}
@@ -712,11 +783,16 @@ final class HttpServerResponse : HttpResponse {
 		creating the server. Depending on this, the session can be persistent
 		or temporary and specific to this server instance.
 	*/
-	Session startSession() {
+	Session startSession(string path = "/", bool secure = false)
+	{
 		assert(m_settings.sessionStore, "no session store set");
 		assert(!m_session, "Try to start a session, but already started one.");
 		m_session = m_settings.sessionStore.create();
-		setCookie(m_settings.sessionIdCookie, m_session.id);
+		m_session["$sessionCookiePath"] = path;
+		m_session["$sessionCookieSecure"] = secure.to!string();
+		auto cookie = setCookie(m_settings.sessionIdCookie, m_session.id);
+		cookie.path = path;
+		cookie.secure = secure;
 		return m_session;
 	}
 
@@ -725,7 +801,9 @@ final class HttpServerResponse : HttpResponse {
 	*/
 	void terminateSession() {
 		assert(m_session, "Try to terminate a session, but none is started.");
-		setCookie(m_settings.sessionIdCookie, "");
+		auto cookie = setCookie(m_settings.sessionIdCookie, null);
+		cookie.path = m_session["$sessionCookiePath"];
+		cookie.secure = m_session["$sessionCookieSecure"].to!bool();
 		m_session.destroy();
 		m_session = null;
 	}
@@ -772,21 +850,26 @@ final class HttpServerResponse : HttpResponse {
 		if( m_bodyWriter ) m_bodyWriter.finalize();
 		if( m_chunkedBodyWriter && m_chunkedBodyWriter !is m_bodyWriter ) m_chunkedBodyWriter.finalize();
 		m_conn.flush();
-		m_timeFinalized = Clock.currTime().toUTC();
+		m_timeFinalized = Clock.currTime(UTC());
 	}
 
 	private void writeHeader()
 	{
 		assert(!m_bodyWriter && !m_headerWritten, "Try to write header after body has already begun.");
 		m_headerWritten = true;
-		auto app = appender!string();
-		app.reserve(512);
+		auto app = AllocAppender!string(m_requestAlloc);
+		app.reserve(256);
 
 		void writeLine(T...)(string fmt, T args)
 		{
-			formattedWrite(app, fmt, args);
+			formattedWrite(&app, fmt, args);
 			app.put("\r\n");
+			logTrace(fmt, args);
 		}
+
+		logTrace("---------------------");
+		logTrace("HTTP server response:");
+		logTrace("---------------------");
 
 		// write the status line
 		writeLine("%s %d %s", 
@@ -795,13 +878,10 @@ final class HttpServerResponse : HttpResponse {
 			this.statusPhrase.length ? this.statusPhrase : httpStatusText(this.statusCode));
 
 		// write all normal headers
-		foreach( n, v; this.headers ){
-			app.put(n);
-			app.put(':');
-			app.put(' ');
-			app.put(v);
-			app.put("\r\n");
-		}
+		foreach (k, v; this.headers)
+			writeLine("%s: %s", k, v);
+
+		logTrace("---------------------");
 
 		// NOTE: AA.length is very slow so this helper function is used to determine if an AA is empty.
 		static bool empty(AA)(AA aa)
@@ -816,7 +896,8 @@ final class HttpServerResponse : HttpResponse {
 				app.put("Set-Cookie: ");
 				app.put(n);
 				app.put('=');
-				filterUrlEncode(app, cookie.value);
+				auto appref = &app;
+				filterUrlEncode(appref, cookie.value);
 				if ( cookie.domain ) {
 					app.put("; Domain=");
 					app.put(cookie.domain);
@@ -831,7 +912,7 @@ final class HttpServerResponse : HttpResponse {
 				}
 				if ( cookie.maxAge ) {
 					app.put("; MaxAge=");
-					formattedWrite(app, "%s", cookie.maxAge);
+					formattedWrite(&app, "%s", cookie.maxAge);
 				}
 				if ( cookie.isSecure ) {
 					app.put("; Secure");
@@ -845,9 +926,8 @@ final class HttpServerResponse : HttpResponse {
 
 		// finalize reposonse header
 		app.put("\r\n");
-		m_conn.write(app.data(), true);
+		m_conn.write(app.data, true);
 	}
-
 }
 
 
@@ -864,8 +944,7 @@ private struct HTTPServerContext {
 private struct HTTPServerListener {
 	string bindAddress;
 	ushort bindPort;
-	string sslCertFile;
-	string sslKeyFile;
+	SslContext sslContext;
 }
 
 private enum MaxHttpHeaderLineLength = 4096;
@@ -881,16 +960,16 @@ private class LimitedHttpInputStream : LimitedInputStream {
 
 private class TimeoutHttpInputStream : InputStream {
 	private {
-		SysTime m_timeref;
-		Duration m_timeleft;
+		long m_timeref;
+		long m_timeleft;
 		InputStream m_in;
 	}
 
-	this(InputStream stream, Duration timeleft) {
+	this(InputStream stream, Duration timeleft, SysTime reftime) {
 		enforce(timeleft > dur!"seconds"(0), "Timeout required");
 		m_in = stream;
-		m_timeleft = timeleft;
-		m_timeref = Clock.currTime();
+		m_timeleft = timeleft.total!"hnsecs"();
+		m_timeref = reftime.stdTime();
 	}
 
 	@property bool empty() { enforce(m_in !is null, "InputStream missing"); return m_in.empty(); }
@@ -906,7 +985,7 @@ private class TimeoutHttpInputStream : InputStream {
 	}
 
 	private void checkTimeout() {
-		SysTime curr = Clock.currTime();
+		auto curr = Clock.currStdTime();
 		auto diff = curr - m_timeref;
 		if( diff > m_timeleft ) throw new HttpStatusException(HttpStatus.RequestTimeout);
 		m_timeleft -= diff;
@@ -926,49 +1005,52 @@ private {
 	__gshared HTTPServerListener[] g_listeners;
 }
 
-/// private
-private void handleHttpConnection(TcpConnection conn_, HTTPServerListener listen_info)
+private void handleHttpConnection(TcpConnection connection, HTTPServerListener listen_info)
 {
-	FreeListRef!SslContext ssl_ctx;
-	FreeListRef!SslContext ssl_context;
-	if( listen_info.sslCertFile.length || listen_info.sslKeyFile.length ){
-		logDebug("Creating SSL context...");
-		assert(listen_info.sslCertFile.length && listen_info.sslKeyFile.length);
-		ssl_ctx = FreeListRef!SslContext(listen_info.sslCertFile, listen_info.sslKeyFile);
-		logDebug("... done");
-	}
-
-	Stream conn;
+	Stream http_stream = connection;
 	FreeListRef!SslStream ssl_stream;
 
-	// If this is a HTTPS server, initiate SSL
-	if( ssl_ctx ){
-		logTrace("accept ssl");
-		ssl_stream = FreeListRef!SslStream(conn_, ssl_ctx, SslStreamState.Accepting);
-		conn = ssl_stream;
-	} else conn = conn_;
+	if (!connection.waitForData(10.seconds())) {
+		logDebug("Client didn't send the initial request in a timely manner. Closing connection.");
+		return;
+	}
 
-	bool persistent;
+	// If this is a HTTPS server, initiate SSL
+	if( listen_info.sslContext ){
+		logTrace("accept ssl");
+		ssl_stream = FreeListRef!SslStream(http_stream, listen_info.sslContext, SslStreamState.Accepting);
+		http_stream = ssl_stream;
+	}
+
 	do {
 		HttpServerSettings settings;
-		persistent = handleRequest(conn, conn_.peerAddress, listen_info, settings);
+		bool keep_alive;
+		handleRequest(http_stream, connection.peerAddress, listen_info, settings, keep_alive);
+		if( !keep_alive ){
+			logTrace("No keep-alive");
+			break;
+		}
 
+		logTrace("Waiting for next request...");
 		// wait for another possible request on a keep-alive connection
-		if( persistent && !conn_.waitForData(settings.keepAliveTimeout) ) {
+		if( !connection.waitForData(settings.keepAliveTimeout) ) {
 			logDebug("persistent connection timeout!");
 			break;
 		}
-	} while( persistent && conn_.connected );
+	} while(connection.connected);
+	
+	logTrace("Done handling connection.");
 }
 
-private bool handleRequest(Stream conn, string peer_address, HTTPServerListener listen_info, ref HttpServerSettings settings)
+private bool handleRequest(Stream http_stream, string peer_address, HTTPServerListener listen_info, ref HttpServerSettings settings, ref bool keep_alive)
 {
+	SysTime reqtime = Clock.currTime(UTC());
+
 	auto request_allocator = scoped!PoolAllocator(1024, defaultAllocator());
 	scope(exit) request_allocator.reset();
 
 	// some instances that live only while the request is running
-	FreeListRef!NullOutputStream nullWriter = FreeListRef!NullOutputStream();
-	FreeListRef!HttpServerRequest req = FreeListRef!HttpServerRequest();
+	FreeListRef!HttpServerRequest req = FreeListRef!HttpServerRequest(reqtime);
 	FreeListRef!TimeoutHttpInputStream timeout_http_input_stream;
 	FreeListRef!LimitedHttpInputStream limited_http_input_stream;
 	FreeListRef!ChunkedInputStream chunked_input_stream;
@@ -988,10 +1070,10 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 			request_task = ctx.requestHandler;
 			break;
 		}
-	req.ssl = listen_info.sslCertFile.length || listen_info.sslKeyFile.length;
+	req.ssl = listen_info.sslContext !is null;
 
 	// Create the response object
-	auto res = FreeListRef!HttpServerResponse(conn, settings, request_allocator.Scoped_payload);
+	auto res = FreeListRef!HttpServerResponse(http_stream, settings, request_allocator.Scoped_payload);
 
 	// Error page handler
 	void errorOut(int code, string msg, string debug_msg, Throwable ex){
@@ -1009,29 +1091,32 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 			err.exception = ex;
 			settings.errorPageHandler(req, res, err);
 		} else {
-			res.contentType = "text/plain";
-			res.bodyWriter.write(to!string(code) ~ " - " ~ httpStatusText(code) ~ "\n\n" ~ msg ~ "\n\nInternal error information:\n" ~ debug_msg);
+			res.writeBody(format("%s - %s\n\n%s\n\nInternal error information:\n%s", code, httpStatusText(code), msg, debug_msg));
 		}
 		assert(res.headerWritten);
 	}
 
 	bool parsed = false;
-	bool keep_alive = false;
+	/*bool*/ keep_alive = false;
 
 	// parse the request
 	try {
 		logTrace("reading request..");
 
-		// limit the total request size
+		// limit the total request time
 		InputStream reqReader;
-		if( settings.maxRequestTime == dur!"seconds"(0) ) reqReader = conn;
+		if( settings.maxRequestTime == dur!"seconds"(0) ) reqReader = http_stream;
 		else {
-			timeout_http_input_stream = FreeListRef!TimeoutHttpInputStream(conn, settings.maxRequestTime);
+			timeout_http_input_stream = FreeListRef!TimeoutHttpInputStream(http_stream, settings.maxRequestTime, reqtime);
 			reqReader = timeout_http_input_stream;
 		}
 
+		// store the IP address (IPv4 addresses forwarded over IPv6 are stored in IPv4 format)
+		if( peer_address.startsWith("::ffff:") && peer_address[7 .. $].indexOf(":") < 0 )
+			req.peer = peer_address[7 .. $];
+		else req.peer = peer_address;
+
 		// basic request parsing
-		req.peer = peer_address;
 		parseRequestHeader(req, reqReader, request_allocator, settings.maxRequestHeaderSize);
 		logTrace("Got request header.");
 
@@ -1053,9 +1138,9 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 
 		// setup compressed output
 		if( auto pae = "Accept-Encoding" in req.headers ){
-			if( countUntil(*pae, "gzip") >= 0 ){
+			if (canFind(*pae, "gzip")) {
 				res.headers["Content-Encoding"] = "gzip";
-			} else if( countUntil(*pae, "deflate") >= 0 ){
+			} else if (canFind(*pae, "deflate")) {
 				res.headers["Content-Encoding"] = "deflate";
 			}
 		}
@@ -1080,12 +1165,12 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 		if( auto pv = "Expect" in req.headers) {
 			if( *pv == "100-continue" ) {
 				logTrace("sending 100 continue");
-				conn.write("HTTP/1.1 100 Continue\r\n\r\n");
+				http_stream.write("HTTP/1.1 100 Continue\r\n\r\n");
 			}
 		}
 
 		// Url parsing if desired
-		if( settings.options & HttpServerOption.ParseURL ){
+		if( settings.options & HttpServerOption.parseURL ){
 			auto url = Url.parse(req.requestUrl);
 			req.path = url.pathString;
 			req.queryString = url.queryString;
@@ -1094,14 +1179,14 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 		}
 
 		// query string parsing if desired
-		if( settings.options & HttpServerOption.ParseQueryString ){
-			if( !(settings.options & HttpServerOption.ParseURL) )
+		if( settings.options & HttpServerOption.parseQueryString ){
+			if( !(settings.options & HttpServerOption.parseURL) )
 				logWarn("Query string parsing requested but URL parsing is disabled!");
 			parseUrlEncodedForm(req.queryString, req.query);
 		}
 
 		// cookie parsing if desired
-		if( settings.options & HttpServerOption.ParseCookies ){
+		if( settings.options & HttpServerOption.parseCookies ){
 			auto pv = "cookie" in req.headers;
 			if ( pv ) parseCookies(*pv, req.cookies);
 		}
@@ -1109,18 +1194,23 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 		// lookup the session
 		if ( settings.sessionStore ) {
 			auto pv = settings.sessionIdCookie in req.cookies;
-			if (pv && *pv != "") {
-				req.session = settings.sessionStore.open(*pv);
-				res.m_session = req.session;
+			if( pv ){
+				// use the first cookie that contains a valid session ID in case
+				// of multiple matching session cookies
+				foreach(v; req.cookies.getAll(settings.sessionIdCookie)){
+					req.session = settings.sessionStore.open(v);
+					res.m_session = req.session;
+					if( req.session ) break;
+				}
 			}
 		}
 
-		if( settings.options & HttpServerOption.ParseFormBody ){
+		if( settings.options & HttpServerOption.parseFormBody ){
 			auto ptype = "Content-Type" in req.headers;				
 			if( ptype ) parseFormData(req.form, req.files, *ptype, req.bodyReader, MaxHttpHeaderLineLength);
 		}
 
-		if( settings.options & HttpServerOption.ParseJsonBody ){
+		if( settings.options & HttpServerOption.parseJsonBody ){
 			if( req.contentType == "application/json" ){
 				auto bodyStr = cast(string)req.bodyReader.readAll();
 				req.json = parseJson(bodyStr);
@@ -1131,11 +1221,11 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 		if( req.method == HttpMethod.HEAD ) res.m_isHeadResponse = true;
 		if( settings.serverString.length )
 			res.headers["Server"] = settings.serverString;
-		res.headers["Date"] = toRFC822DateTimeString(Clock.currTime().toUTC());
 		if( req.persistent ) res.headers["Keep-Alive"] = formatAlloc(request_allocator, "timeout=%d", settings.keepAliveTimeout.total!"seconds"());
 
 		// finished parsing the request
 		parsed = true;
+		logTrace("persist: %s", req.persistent);
 		keep_alive = req.persistent;
 
 		// handle the request
@@ -1145,7 +1235,7 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 
 		// if no one has written anything, return 404
 		if( !res.headerWritten )
-			throw new HttpStatusException(HttpStatus.NotFound);
+			throw new HttpStatusException(HttpStatus.notFound);
 	} catch(HttpStatusException err) {
 		logDebug("http error thrown: %s", err.toString());
 		if ( !res.headerWritten ) errorOut(err.status, err.msg, err.toString(), err);
@@ -1154,7 +1244,7 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 		if ( !parsed || justifiesConnectionClose(err.status) )
 			keep_alive = false;
 	} catch (Throwable e) {
-		auto status = parsed ? HttpStatus.InternalServerError : HttpStatus.BadRequest;
+		auto status = parsed ? HttpStatus.internalServerError : HttpStatus.badRequest;
 		if( !res.headerWritten ) errorOut(status, httpStatusText(status), e.toString(), e);
 		else logError("Error after page has been written: %s", e.toString());
 		logDebug("Exception while handling request %s %s: %s", req.method, req.requestUrl, e.toString());
@@ -1162,8 +1252,11 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 			keep_alive = false;
 	}
 
-	if( req.bodyReader && !req.bodyReader.empty )
+	if( req.bodyReader && !req.bodyReader.empty ){
+		auto nullWriter = scoped!NullOutputStream();
 		nullWriter.write(req.bodyReader);
+		logTrace("dropped body");
+	}
 
 	// finalize (e.g. for chunked encoding)
 	res.finalize();
@@ -1179,18 +1272,23 @@ private bool handleRequest(Stream conn, string peer_address, HTTPServerListener 
 	foreach( log; context.loggers )
 		log.log(req, res);
 
-	return keep_alive;
+	logTrace("return %s (used pool memory: %s/%s)", keep_alive, request_allocator.allocatedSize, request_allocator.totalSize);
+	return keep_alive != false;
 }
 
 
-private void parseRequestHeader(HttpServerRequest req, InputStream conn, Allocator alloc, ulong max_header_size)
+private void parseRequestHeader(HttpServerRequest req, InputStream http_stream, Allocator alloc, ulong max_header_size)
 {
-	auto stream = FreeListRef!LimitedHttpInputStream(conn, max_header_size);
+	auto stream = FreeListRef!LimitedHttpInputStream(http_stream, max_header_size);
 
 	logTrace("HTTP server reading status line");
 	auto reqln = cast(string)stream.readLine(MaxHttpHeaderLineLength, "\r\n", alloc);
-	logTrace("req: %s", reqln);
-	
+
+	logTrace("--------------------");
+	logTrace("HTTP server request:");
+	logTrace("--------------------");
+	logTrace("%s", reqln);
+
 	//Method
 	auto pos = reqln.indexOf(' ');
 	enforce( pos >= 0, "invalid request method" );
@@ -1208,9 +1306,13 @@ private void parseRequestHeader(HttpServerRequest req, InputStream conn, Allocat
 	
 	//headers
 	parseRfc5322Header(stream, req.headers, MaxHttpHeaderLineLength, alloc);
+
+	foreach (k, v; req.headers)
+		logTrace("%s: %s", k, v);
+	logTrace("--------------------");
 }
 
-private void parseCookies(string str, ref string[string] cookies) 
+private void parseCookies(string str, ref CookieValueMap cookies) 
 {
 	while(str.length > 0) {
 		auto idx = str.indexOf('=');

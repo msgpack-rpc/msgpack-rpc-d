@@ -10,6 +10,7 @@ module vibe.core.file;
 public import vibe.core.driver;
 public import vibe.inet.url;
 
+import vibe.core.drivers.threadedfile;
 import vibe.core.log;
 
 import std.conv;
@@ -21,15 +22,20 @@ import std.path;
 import std.string;
 
 
+version(Posix){
+	private extern(C) int mkstemps(char* templ, int suffixlen);
+}
+
+
 /**
 	Opens a file stream with the specified mode.
 */
-FileStream openFile(Path path, FileMode mode = FileMode.Read)
+FileStream openFile(Path path, FileMode mode = FileMode.read)
 {
 	return getEventDriver().openFile(path, mode);
 }
 /// ditto
-FileStream openFile(string path, FileMode mode = FileMode.Read)
+FileStream openFile(string path, FileMode mode = FileMode.read)
 {
 	return openFile(Path(path), mode);
 }
@@ -39,13 +45,25 @@ FileStream openFile(string path, FileMode mode = FileMode.Read)
 */
 FileStream createTempFile(string suffix = null)
 {
-	char[L_tmpnam] tmp;
-	tmpnam(tmp.ptr);
-	auto tmpname = to!string(tmp.ptr);
-	if( tmpname.startsWith("\\") ) tmpname = tmpname[1 .. $];
-	tmpname ~= suffix;
-	logDebug("tmp %s", tmpname);
-	return openFile(tmpname, FileMode.CreateTrunc);
+	version(Windows){
+		char[L_tmpnam] tmp;
+		tmpnam(tmp.ptr);
+		auto tmpname = to!string(tmp.ptr);
+		if( tmpname.startsWith("\\") ) tmpname = tmpname[1 .. $];
+		tmpname ~= suffix;
+		logDebug("tmp %s", tmpname);
+		return openFile(tmpname, FileMode.createTrunc);
+	} else {
+		enum pattern ="/tmp/vtmp.XXXXXX";
+		scope templ = new char[pattern.length+suffix.length+1];
+		templ[0 .. pattern.length] = pattern;
+		templ[pattern.length .. $-1] = suffix;
+		templ[$-1] = '\0';
+		assert(suffix.length <= int.max);
+		auto fd = mkstemps(templ.ptr, cast(int)suffix.length);
+		enforce(fd >= 0, "Failed to create temporary file.");
+		return new ThreadedFileStream(fd, Path(templ[0 .. $-1].idup), FileMode.createTrunc);
+	}
 }
 
 /**
@@ -79,10 +97,10 @@ void moveFile(string from, string to)
 void copyFile(Path from, Path to, bool overwrite = false)
 {
 	{
-		auto src = openFile(from, FileMode.Read);
+		auto src = openFile(from, FileMode.read);
 		scope(exit) src.close();
 		enforce(overwrite || !existsFile(to), "Destination file already exists.");
-		auto dst = openFile(to, FileMode.CreateTrunc);
+		auto dst = openFile(to, FileMode.createTrunc);
 		scope(exit) dst.close();
 		dst.write(src);
 	}
@@ -229,13 +247,22 @@ struct FileInfo {
 */
 enum FileMode {
 	/// The file is opened read-only.
-	Read,
+	read,
 	/// The file is opened for read-write random access.
-	ReadWrite,
+	readWrite,
 	/// The file is truncated if it exists and created otherwise and the opened for read-write access.
-	CreateTrunc,
+	createTrunc,
 	/// The file is opened for appending data to it and created if it does not exist.
-	Append
+	append,
+
+	/// deprecated
+	Read = read,
+	/// deprecated
+	ReadWrite = readWrite,
+	/// deprecated
+	CreateTrunc = createTrunc,
+	/// deprecated
+	Append = append
 }
 
 /**
@@ -284,11 +311,18 @@ interface DirectoryWatcher {
 */
 enum DirectoryChangeType {
 	/// A file or directory was added
-	Added,
+	added,
 	/// A file or directory was deleted
-	Removed,
+	removed,
 	/// A file or directory was modified
-	Modified
+	modified,
+
+	/// deprecated
+	Added = added,
+	/// deprecated
+	Removed = removed,
+	/// deprecated
+	Modified = modified
 }
 
 

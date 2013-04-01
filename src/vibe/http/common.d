@@ -11,6 +11,7 @@ public import vibe.http.status;
 
 import vibe.core.log;
 import vibe.core.net;
+import vibe.inet.message;
 import vibe.stream.operations;
 import vibe.utils.array;
 import vibe.utils.memory;
@@ -32,6 +33,7 @@ enum HttpVersion {
 }
 
 enum HttpMethod {
+	// HTTP standard
 	GET,
 	HEAD,
 	PUT,
@@ -40,7 +42,16 @@ enum HttpMethod {
 	DELETE,
 	OPTIONS,
 	TRACE,
-	CONNECT
+	CONNECT,
+	
+	// WEBDAV extensions
+	COPY,
+	LOCK,
+	MKCOL,
+	MOVE,
+	PROPFIND,
+	PROPPATCH,
+	UNLOCK
 }
 
 
@@ -49,11 +60,8 @@ enum HttpMethod {
 */
 string httpMethodString(HttpMethod m)
 {
-	static immutable strings = ["GET", "HEAD", "PUT", "POST", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"];
-	static assert(m.max+1 == strings.length);
-	return strings[m];
+	return to!string(m);
 }
-
 
 /**
 	Returns the HttpMethod value matching the given HTTP method string.
@@ -71,8 +79,24 @@ HttpMethod httpMethodFromString(string str)
 		case "OPTIONS": return HttpMethod.OPTIONS;
 		case "TRACE": return HttpMethod.TRACE;
 		case "CONNECT": return HttpMethod.CONNECT;
+		case "COPY": return HttpMethod.COPY;
+		case "LOCK": return HttpMethod.LOCK;
+		case "MKCOL": return HttpMethod.MKCOL;
+		case "MOVE": return HttpMethod.MOVE;
+		case "PROPFIND": return HttpMethod.PROPFIND;
+		case "PROPPATCH": return HttpMethod.PROPPATCH;
+		case "UNLOCK": return HttpMethod.UNLOCK;
 	}
 }
+
+unittest 
+{
+	assert(httpMethodString(HttpMethod.GET) == "GET");
+	assert(httpMethodString(HttpMethod.UNLOCK) == "UNLOCK");
+	assert(httpMethodFromString("GET") == HttpMethod.GET);
+	assert(httpMethodFromString("UNLOCK") == HttpMethod.UNLOCK);
+}
+
 
 /**
 	Utility function that throws a HttpStatusException if the _condition is not met.
@@ -106,11 +130,11 @@ class HttpRequest {
 		*/
 		string requestUrl = "/";
 
-		/// Please use requestUrl instead. This alias will be deprecated after the next release.
-		/*deprecated*/ alias requestUrl url;
+		/// Please use requestUrl instead.
+		deprecated("Please use requestUrl instead.") alias requestUrl url;
 
 		/// All request _headers
-		StrMapCI headers;
+		InetHeaderMap headers;
 	}
 	
 	protected this(Stream conn)
@@ -195,7 +219,7 @@ class HttpResponse {
 		string statusPhrase;
 
 		/// The response header fields
-		StrMapCI headers;
+		InetHeaderMap headers;
 
 		/// All cookies that shall be set on the client for this request
 		Cookie[string] cookies;
@@ -332,13 +356,13 @@ final class ChunkedInputStream : InputStream {
 final class ChunkedOutputStream : OutputStream {
 	private {
 		OutputStream m_out;
-		Appender!(ubyte[]) m_buffer;
+		AllocAppender!(ubyte[]) m_buffer;
 	}
 	
-	this(OutputStream stream) 
+	this(OutputStream stream, Allocator alloc = defaultAllocator())
 	{
 		m_out = stream;
-		m_buffer = appender!(ubyte[])();
+		m_buffer = AllocAppender!(ubyte[])(alloc);
 	}
 
 	void write(in ubyte[] bytes, bool do_flush = true)
@@ -370,15 +394,16 @@ final class ChunkedOutputStream : OutputStream {
 			writeChunkSize(data.length);
 			m_out.write(data, false);
 			m_out.write("\r\n");
-			m_buffer.clear();
 		}
 		m_out.flush();
+		m_buffer.reset(AppenderResetMode.reuseData);
 	}
 
 	void finalize() {
 		flush();
 		m_out.write("0\r\n\r\n");
 		m_out.flush();
+		m_buffer.reset(AppenderResetMode.freeData);
 	}
 	private void writeChunkSize(long length) {
 		m_out.write(format("%x\r\n", length), false);
@@ -396,152 +421,130 @@ final class Cookie {
 		bool m_httpOnly; 
 	}
 
-	Cookie setValue(string value) { m_value = value; return this; }
-	@property string value() { return m_value; }
+	@property void value(string value) { m_value = value; }
+	@property string value() const { return m_value; }
 
-	Cookie setDomain(string domain) { m_domain = domain; return this; }
-	@property string domain() { return m_domain; }
+	@property void domain(string value) { m_domain = value; }
+	@property string domain() const { return m_domain; }
 
-	Cookie setPath(string path) { m_path = path; return this; }
-	@property string path() { return m_path; }
+	@property void path(string value) { m_path = value; }
+	@property string path() const { return m_path; }
 
-	Cookie setExpire(string expires) { m_expires = expires; return this; }
-	@property string expires() { return m_expires; }
+	@property void expires(string value) { m_expires = value; }
+	@property string expires() const { return m_expires; }
 
-	Cookie setMaxAge(long maxAge) { m_maxAge = maxAge; return this;}
-	@property long maxAge() { return m_maxAge; }
+	@property void maxAge(long value) { m_maxAge = value; }
+	@property long maxAge() const { return m_maxAge; }
 
-	Cookie setSecure(bool enabled) { m_secure = enabled; return this; }
-	@property bool isSecure() { return m_secure; }
+	@property void secure(bool value) { m_secure = value; }
+	@property bool secure() const { return m_secure; }
 
-	Cookie setHttpOnly(bool enabled) { m_httpOnly = enabled; return this; }
-	@property bool isHttpOnly() { return m_httpOnly; }
+	@property void httpOnly(bool value) { m_httpOnly = value; }
+	@property bool httpOnly() const { return m_httpOnly; }
 
+
+	/// Deprecated compatibility aliases
+	deprecated("Please use secure instead.") alias secure isSecure;
+	// ditto
+	deprecated("Please use httpOnly instead.") alias httpOnly isHttpOnly;
+	// ditto
+	deprecated("Please use the 'value' property instead.") Cookie setValue(string value) { m_value = value; return this; }
+	/// ditto
+	deprecated("Please use the 'domain' property instead.") Cookie setDomain(string domain) { m_domain = domain; return this; }
+	/// ditto
+	deprecated("Please use the 'path' property instead.") Cookie setPath(string path) { m_path = path; return this; }
+	/// ditto
+	deprecated("Please use the 'expire' property instead.") Cookie setExpire(string expires) { m_expires = expires; return this; }
+	/// ditto
+	deprecated("Please use the 'maxAge' property instead.") Cookie setMaxAge(long maxAge) { m_maxAge = maxAge; return this;}
+	/// ditto
+	deprecated("Please use the 'secure' property instead.") Cookie setSecure(bool enabled) { m_secure = enabled; return this; }
+	/// ditto
+	deprecated("Please use the 'httpOnly' property instead.") Cookie setHttpOnly(bool enabled) { m_httpOnly = enabled; return this; }
 }
 
-/**
-	Behaves like string[string] but case does not matter for the key.
+/// Compatibility alias for vibe.inet.message.InetHeaderMap
+deprecated("please use vibe.inet.message.InetHeaderMap instead.")
+alias InetHeaderMap StrMapCI;
 
-	This kind of map is used for MIME headers (e.g. for HTTP), where the case of the key strings
-	does not matter.
 
-	Note that despite case not being relevant for matching keyse, iterating over the map will yield
-	the original case of the key that was put in.
+/** 
 */
-struct StrMapCI {
+struct CookieValueMap {
+	struct Cookie {
+		string name;
+		string value;
+	}
+
 	private {
-		static struct Field { uint keyCheckSum; string key; string value; }
-		Field[64] m_fields;
-		size_t m_fieldCount = 0;
-		Field[] m_extendedFields;
-		static char[256] s_keyBuffer;
-	}
-	
-	@property size_t length() const { return m_fieldCount + m_extendedFields.length; }
-
-	void remove(string key){
-		auto keysum = computeCheckSumI(key);
-		auto idx = getIndex(m_fields[0 .. m_fieldCount], key, keysum);
-		if( idx >= 0 ){
-			removeFromArrayIdx(m_fields[0 .. m_fieldCount], idx);
-			m_fieldCount--;
-		} else {
-			idx = getIndex(m_extendedFields, key, keysum);
-			enforce(idx >= 0);
-			removeFromArrayIdx(m_extendedFields, idx);
-		}
+		Cookie[] m_entries;
 	}
 
-	string get(string key, string def_val = null)
+	string get(string name, string def_value = null)
 	const {
-		if( auto pv = key in this ) return *pv;
-		return def_val;
+		auto pv = name in this;
+		if( !pv ) return def_value;
+		return *pv;
 	}
 
-	string opIndex(string key)
+	string[] getAll(string name)
 	const {
-		auto pitm = key in this;
-		enforce(pitm !is null, "Accessing non-existent key '"~key~"'.");
-		return *pitm;
-	}
-	
-	string opIndexAssign(string val, string key)
-	{
-		auto pitm = key in this;
-		if( pitm ) *pitm = val;
-		else if( m_fieldCount < m_fields.length ) m_fields[m_fieldCount++] = Field(computeCheckSumI(key), key, val);
-		else m_extendedFields ~= Field(computeCheckSumI(key), key, val);
-		return val;
-	}
-
-	inout(string)* opBinaryRight(string op)(string key) inout if(op == "in") {
-		uint keysum = computeCheckSumI(key);
-		auto idx = getIndex(m_fields[0 .. m_fieldCount], key, keysum);
-		if( idx >= 0 ) return &m_fields[idx].value;
-		idx = getIndex(m_extendedFields, key, keysum);
-		if( idx >= 0 ) return &m_extendedFields[idx].value;
-		return null;
-	}
-
-	bool opBinaryRight(string op)(string key) inout if(op == "!in") {
-		return !(key in this);
-	}
-
-	int opApply(int delegate(ref string key, ref string val) del)
-	{
-		foreach( ref kv; m_fields[0 .. m_fieldCount] ){
-			string kcopy = kv.key;
-			if( auto ret = del(kcopy, kv.value) )
-				return ret;
-		}
-		foreach( ref kv; m_extendedFields ){
-			string kcopy = kv.key;
-			if( auto ret = del(kcopy, kv.value) )
-				return ret;
-		}
-		return 0;
-	}
-
-	int opApply(int delegate(ref string val) del)
-	{
-		foreach( ref kv; m_fields[0 .. m_fieldCount] ){
-			if( auto ret = del(kv.value) )
-				return ret;
-		}
-		foreach( ref kv; m_extendedFields ){
-			if( auto ret = del(kv.value) )
-				return ret;
-		}
-		return 0;
-	}
-
-	@property StrMapCI dup()
-	const {
-		StrMapCI ret;
-		ret.m_fields[0 .. m_fieldCount] = m_fields[0 .. m_fieldCount];
-		ret.m_fieldCount = m_fieldCount;
-		ret.m_extendedFields = m_extendedFields.dup;
+		string[] ret;
+		foreach(c; m_entries)
+			if( c.name == name )
+				ret ~= c.value;
 		return ret;
 	}
 
-	private ptrdiff_t getIndex(in Field[] map, string key, uint keysum)
-	const {
-		foreach( i, ref const(Field) entry; map ){
-			if( entry.keyCheckSum != keysum ) continue;
-			if( icmp2(entry.key, key) == 0 )
-				return i;
-		}
-		return -1;
-	}
-	
-	// very simple check sum function with a good chance to match
-	// strings with different case equal
-	private static uint computeCheckSumI(string s)
+	void opIndexAssign(string value, string name)
 	{
-		import std.uni;
-		uint csum = 0;
-		foreach( i; 0 .. s.length )
-			csum += 357*(s[i]&0x1101_1111);
-		return csum;
+		m_entries ~= Cookie(name, value);
+	}
+
+	string opIndex(string name)
+	const {
+		auto pv = name in this;
+		if( !pv ) throw new RangeError("Non-existent cookie: "~name);
+		return *pv;
+	}
+
+	int opApply(scope int delegate(ref Cookie) del)
+	{
+		foreach(ref c; m_entries)
+			if( auto ret = del(c) )
+				return ret;
+		return 0;
+	}
+
+	int opApply(scope int delegate(ref Cookie) del)
+	const {
+		foreach(Cookie c; m_entries)
+			if( auto ret = del(c) )
+				return ret;
+		return 0;
+	}
+
+	int opApply(scope int delegate(ref string name, ref string value) del)
+	{
+		foreach(ref c; m_entries)
+			if( auto ret = del(c.name, c.value) )
+				return ret;
+		return 0;
+	}
+
+	int opApply(scope int delegate(ref string name, ref string value) del)
+	const {
+		foreach(Cookie c; m_entries)
+			if( auto ret = del(c.name, c.value) )
+				return ret;
+		return 0;
+	}
+
+	inout(string)* opBinaryRight(string op)(string name) inout if(op == "in")
+	{
+		foreach(c; m_entries)
+			if( c.name == name )
+				return &c.value;
+		return null;
 	}
 }

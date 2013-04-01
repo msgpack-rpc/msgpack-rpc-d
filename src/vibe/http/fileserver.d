@@ -13,10 +13,10 @@ import vibe.http.server;
 import vibe.inet.message;
 import vibe.inet.mimetypes;
 import vibe.inet.url;
-import vibe.crypto.md5;
 
 import std.conv;
 import std.datetime;
+import std.digest.md;
 import std.file;
 import std.string;
 
@@ -26,8 +26,18 @@ import std.string;
 */
 class HttpFileServerSettings {
 	string serverPathPrefix = "/";
-	long maxAge = 60*60*24; // 24 hours
+	Duration maxAge = hours(24);
 	bool failIfNotFound = false;
+	
+	/**
+		Called just before headers and data are sent.
+		Allows headers to be customized, or other custom processing to be performed.
+
+		Note: Any changes you make to the response, physicalPath, or anything
+		else during this function will NOT be verified by Vibe.d for correctness.
+		Make sure any alterations you make are complete and correct according to HTTP spec.
+	*/
+	void delegate(HttpServerRequest req, HttpServerResponse res, ref string physicalPath) preWriteCallback = null;
 
 	this() {}
 
@@ -95,7 +105,7 @@ HttpServerRequestDelegate serveStaticFiles(string local_path, HttpFileServerSett
 		}
 
 		// simple etag generation
-		auto etag = "\"" ~ md5(path ~ ":" ~ lastModified ~ ":" ~ to!string(dirent.size)) ~ "\"";
+		auto etag = "\"" ~ hexDigest!MD5(path ~ ":" ~ lastModified ~ ":" ~ to!string(dirent.size)).idup ~ "\"";
 		if( auto pv = "If-None-Match" in req.headers ) {
 			if ( *pv == etag ) {
 				res.statusCode = HttpStatus.NotModified;
@@ -114,12 +124,15 @@ HttpServerRequestDelegate serveStaticFiles(string local_path, HttpFileServerSett
 		res.headers["Content-Length"] = to!string(dirent.size);
 		
 		res.headers["Last-Modified"] = lastModified;
-		if( settings.maxAge > 0 ){
-			auto expireTime = Clock.currTime().toUTC() + dur!"seconds"(settings.maxAge);
+		if( settings.maxAge > seconds(0) ){
+			auto expireTime = Clock.currTime(UTC()) + settings.maxAge;
 			res.headers["Expires"] = toRFC822DateTimeString(expireTime);
 			res.headers["Cache-Control"] = "max-age="~to!string(settings.maxAge);
 		}
-
+		
+		if(settings.preWriteCallback)
+			settings.preWriteCallback(req, res, path);
+		
 		// for HEAD responses, stop here
 		if( res.isHeadResponse() ){
 			res.writeVoidBody();
