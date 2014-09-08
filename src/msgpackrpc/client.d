@@ -36,7 +36,7 @@ class Client(alias Protocol)
     void close()
     {
         _transport.close();
-        _table.clear();
+        _table.destroy();
     }
 
     T call(T, Args...)(string method, Args args)

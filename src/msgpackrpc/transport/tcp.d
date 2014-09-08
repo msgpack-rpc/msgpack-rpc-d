@@ -9,17 +9,21 @@ import msgpackrpc.common;
 import msgpackrpc.server;
 
 import msgpack;
-import vibe.vibe;
+import vibe.core.net;
+import vibe.core.driver;
+
+import std.conv;
+
 
 size_t num = 0;
 abstract class BaseSocket
 {
   private:
-    TcpConnection _connection;
+    TCPConnection _connection;
     StreamingUnpacker _unpacker;
 
   public:
-    this(TcpConnection connection)
+    this(TCPConnection connection)
     {
         _connection = connection;
         _unpacker = StreamingUnpacker([], 2048);
@@ -71,7 +75,8 @@ abstract class BaseSocket
     void sendMessage(ubyte[] message)
     {
         OutputStream output = _connection;
-        output.write(message, true);
+        output.write(message);
+        output.flush();
     }
 
     void proccessRequest(const(ubyte)[] data)
@@ -107,7 +112,7 @@ class ClientSocket(Client) : BaseSocket
     Client _client;
 
   public:
-    this(TcpConnection connection, Client client)
+    this(TCPConnection connection, Client client)
     {
         super(connection);
         _client = client;
@@ -147,7 +152,7 @@ final class ClientTransport(Client)
     {
         _client = client;
         _endpoint = endpoint;
-        _socket = new ClientSocket!Client(connectTcp(_endpoint.address, _endpoint.port), client);
+        _socket = new ClientSocket!Client(connectTCP(_endpoint.address, _endpoint.port), client);
     }
 
     void sendMessage(ubyte[] message, bool request = true)
@@ -172,7 +177,7 @@ class ServerSocket(Server) : BaseSocket
     Server _server;
 
   public:
-    this(TcpConnection connection, Server server)
+    this(TCPConnection connection, Server server)
     {
         super(connection);
         _server = server;
@@ -203,11 +208,11 @@ final class ServerTransport(Server)
 
     void listen(Server server)
     {
-        auto callback = (TcpConnection conn) {
+        auto callback = (TCPConnection conn) {
             auto socket = new ServerSocket!Server(conn, server);
             socket.onRead();
         };
-        listenTcp(_endpoint.port, callback, _endpoint.address);
+        listenTCP(_endpoint.port, callback, _endpoint.address);
     }
 
     void close()

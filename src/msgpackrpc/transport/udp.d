@@ -8,19 +8,20 @@ module msgpackrpc.transport.udp;
 import msgpackrpc.common;
 import msgpackrpc.server;
 
-
 import msgpack;
-import vibe.vibe;
+import vibe.core.net;
+
+import std.conv;
 
 
 abstract class BaseSocket
 {
   private:
-    UdpConnection _connection;
+    UDPConnection _connection;
     StreamingUnpacker _unpacker;
 
   public:
-    this(UdpConnection connection)
+    this(UDPConnection connection)
     {
         _connection = connection;
         _unpacker = StreamingUnpacker([], 2048);
@@ -88,7 +89,7 @@ class ServerSocket(Server) : BaseSocket
     Server _server;
 
   public:
-    this(UdpConnection connection, Server server)
+    this(UDPConnection connection, Server server)
     {
         super(connection);
         _server = server;
@@ -109,10 +110,10 @@ class ServerSocket(Server) : BaseSocket
     {
       private:
         NetworkAddress* _netAddr;
-        UdpConnection _connection;
+        UDPConnection _connection;
 
       public:
-        this(UdpConnection connection, NetworkAddress* netAddr)
+        this(UDPConnection connection, NetworkAddress* netAddr)
         {
             _connection = connection;
             _netAddr = netAddr;
@@ -140,7 +141,7 @@ final class ServerTransport(Server)
     void listen(Server server)
     {
         runTask({
-            auto socket = new ServerSocket!Server(listenUdp(_endpoint.port, _endpoint.address), server);
+            auto socket = new ServerSocket!Server(listenUDP(_endpoint.port, _endpoint.address), server);
             while (true)
                 socket.onRead();
         });
