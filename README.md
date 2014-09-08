@@ -38,7 +38,7 @@ class FooServer
 }
 
 // TCPServer or UDPServer
-auto server = new TCPServer!(HelloServer)(new HelloServer);
+auto server = new TCPServer!(FooServer)(new FooServer);
 server.listen(Endpoint(18800, "127.0.0.1"));
 server.start();
 ```

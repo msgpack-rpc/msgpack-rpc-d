@@ -4,7 +4,7 @@
     "authors":     ["Masahiro Nakagawa"],
     "homepage":    "https://github.com/msgpack-rpc/msgpack-rpc-d",
     "license":     "Boost Software License, Version 1.0",
-    "copyright":   "Copyright (c) 2012- Masahiro Nakagawa",
+    "copyright":   "Copyright (c) 2013- Masahiro Nakagawa",
 
     "importPaths": ["src"],
     "targetType":  "library",
