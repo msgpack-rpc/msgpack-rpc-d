@@ -204,6 +204,34 @@ CASE".format(name, ParameterTypes.length, name);
 %s.%s(%s);
 CASE".format(prefix, name, generateParameters!(ParameterTypes)());
     }
+    else static if (isArray!(RT))
+    {
+        alias ForeachType!(RT) ET;
+
+        static if (isIntegral!(ET))
+        {
+            // TODO: Add this conversion in msgpack-d
+            result ~= q"CASE
+auto arr = %s.%s(%s);
+Value[] vals; vals.length = arr.length;
+foreach (i, e; arr) {
+  vals[i] = Value(cast(%s)e);
+}
+result = Value(vals);
+CASE".format(prefix, name, generateParameters!(ParameterTypes)(), generateIntegerType!(ET));
+        }
+        else
+        {
+            result ~= q"CASE
+auto arr = %s.%s(%s);
+Value[] vals; vals.length = arr.length;
+foreach (i, e; arr) {
+  vals[i] = Value(e);
+}
+result = Value(vals);
+CASE".format(prefix, name, generateParameters!(ParameterTypes)());
+        }
+    }
     else
     {
         // TODO: Support struct and class return type.
@@ -228,4 +256,12 @@ string generateParameters(Types...)()
     }
 
     return result;
+}
+
+template generateIntegerType(Type)
+{
+    static if (isSigned!Type)
+        enum generateIntegerType = "long";
+    else
+        enum generateIntegerType = "ulong";
 }
