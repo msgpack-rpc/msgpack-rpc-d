@@ -204,7 +204,7 @@ CASE".format(name, ParameterTypes.length, name);
 %s.%s(%s);
 CASE".format(prefix, name, generateParameters!(ParameterTypes)());
     }
-    else static if (isArray!(RT))
+    else static if (isArray!(RT) && !isSomeString!(RT))
     {
         alias ForeachType!(RT) ET;
 
