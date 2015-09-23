@@ -15,7 +15,6 @@ import vibe.core.driver;
 import std.conv;
 
 
-size_t num = 0;
 abstract class BaseSocket
 {
   private:
