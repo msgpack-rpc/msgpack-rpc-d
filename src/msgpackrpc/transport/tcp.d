@@ -58,7 +58,10 @@ abstract class BaseSocket
         InputStream input = _connection;
 
         do {
-            auto size = input.leastSize;
+            static if (size_t.sizeof == 4)
+                auto size = cast(uint)input.leastSize;
+            else
+                auto size = input.leastSize;
             if (size > 0) {
                 ubyte[] data = new ubyte[](size);
 
@@ -124,8 +127,10 @@ class ClientSocket(Client) : BaseSocket
         do {
             //if (!input.dataAvailableForRead)
             //    return;
-
-            ubyte[] data = new ubyte[](input.leastSize);
+            static if (size_t.sizeof == 4)
+                ubyte[] data = new ubyte[](cast(uint)input.leastSize);
+            else
+                ubyte[] data = new ubyte[](input.leastSize);
             input.read(data);
             proccessRequest(data);
             break;
