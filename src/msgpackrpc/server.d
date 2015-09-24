@@ -53,8 +53,9 @@ class Server(alias T, alias Protocol)
     {
         foreach (transport; _transports)
             transport.close();
-
-        exitEventLoop();
+        
+        version( noExitEventloop) {} else
+        {  exitEventLoop(); }
     }
 
     void onRequest(Sender)(Sender socket, size_t id, string method, ref Value[] params)
