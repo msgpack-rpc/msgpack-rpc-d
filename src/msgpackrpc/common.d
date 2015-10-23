@@ -23,13 +23,19 @@ struct Endpoint
     ushort port;
     string address;
 
+    this(ushort port, string address)
+    {
+        this.port = port;
+        this.address = address;
+    }
+
     this(string connectionString)
     {
         import std.array;
         auto splitted = connectionString.split(":");
-        address = splitted[0];
+        this.address = splitted[0];
         import std.conv;
-        port = splitted[1].to!ushort;
+        this.port = splitted[1].to!ushort;
     }
 
 }
