@@ -26,11 +26,13 @@ class Client(alias Protocol)
     Transport _transport;
     IDGenerater _generator;
     Future[size_t] _table;
+    Duration _timeout;
 
   public:
-    this(Endpoint endpoint)
+    this(Endpoint endpoint, Duration timeout= dur!"msecs"(1000))
     {
         _transport = new Transport(this, endpoint);
+        _timeout = timeout;
     }
 
     void close()
@@ -78,7 +80,7 @@ class Client(alias Protocol)
         import std.array;
 
         auto id = ++_generator;
-        auto future = new Future();
+        auto future = new Future(_timeout);
         auto packer = packer(Appender!(ubyte[])());
 
         _table[id] = future;
@@ -98,17 +100,26 @@ class Future
 {
     alias void delegate(Future) Callback;
 
+    this(Duration timeout = dur!"seconds"(5) )
+    {
+        logTrace("create ManualEvent for Future");
+        m_ev = getEventDriver().createManualEvent();
+        m_emitCount = m_ev.emitCount;
+        m_timeout = timeout;
+    }
+
   private:
     Value _value;
     Callback _callback;
     bool _err;
-    bool _yet = true;
+    ManualEvent m_ev;
+    int m_emitCount;
+    Duration m_timeout;
 
   public:
     void join()
     {
-        while (_yet)
-            getEventDriver().runEventLoopOnce();
+        m_ev.wait(m_timeout, m_emitCount);
     }
 
     @property
@@ -140,7 +151,7 @@ class Future
 
         void result(ref Value res)
         {
-            _yet = false;
+            m_ev.emit();
             _value = res;
 
             if (_callback !is null)
@@ -159,7 +170,7 @@ class Future
 
         void error(ref Value err)
         {
-            _yet = false;
+            m_ev.emit();
             _err = true;
             _value = err;
 

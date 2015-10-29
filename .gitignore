@@ -1,0 +1,5 @@
+/examples/with_http_server/with_http_server
+/dub.selections.json
+/examples/with_http_server/dub.selections.json
+*.[ao]
+.dub
