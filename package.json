@@ -21,6 +21,5 @@
             "name": "integrated",
             "versions": ["VibeCustomMain", "noExitEventloop"]
         }
-    ],
-    "subConfigurations": { "vibe-d": "libevent"}
+    ]
 }
