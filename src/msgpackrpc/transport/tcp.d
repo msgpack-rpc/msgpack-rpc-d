@@ -82,6 +82,11 @@ class MsgpackSocket
 
 
         public:
+            this(MsgpackSocket socket)
+            {
+                _socket = socket;
+            }
+
             //TODO: Can this be broken up into smaller functions?
             int opApply(scope int delegate(ref Message) handleMessage)
             {
@@ -129,7 +134,7 @@ class MsgpackSocket
                 return result;
             }
         }
-        return Reader();
+        return Reader(this);
     }
 
   private:
