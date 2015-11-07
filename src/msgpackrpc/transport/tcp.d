@@ -13,19 +13,30 @@ import vibe.core.net;
 import vibe.core.driver;
 
 import std.conv;
+import std.datetime;
+import std.exception;
 
+class TimeoutException: RPCException
+{
+    @safe pure nothrow this(string msg)
+    {
+        super(msg);
+    }
+}
 
-abstract class BaseSocket
+class MsgpackSocket
 {
   private:
+    Duration      _timeout;
     TCPConnection _connection;
     StreamingUnpacker _unpacker;
 
   public:
-    this(TCPConnection connection)
+    this(TCPConnection connection, Duration timeout = Duration.max)
     {
         _connection = connection;
         _unpacker = StreamingUnpacker([], 2048);
+        _timeout = timeout;
     }
 
     void close()
@@ -33,139 +44,134 @@ abstract class BaseSocket
         _connection.close();
     }
 
-    void sendResponse(Args...)(const Args args)
+    void send(ref Request request)
     {
-        sendMessage(pack(MessageType.response, args));
+        sendData(request.serialize());
     }
 
-    void onRequest(size_t id, string method, Value[] params)
+    void send(ref Response response)
     {
-        throw new Exception("Not implemented yet");
+        sendData(response.serialize());
     }
 
-    void onResponse(size_t id, Value error, Value result)
+    void send(ref Notification notification)
     {
-        throw new Exception("Not implemented yet");
+        sendData(notification.serialize());
     }
 
-    void onNotify(string method, Value[] params)
+    auto readMessages()
     {
-        throw new Exception("Not implemented yet");
-    }
+        struct Reader
+        {
+        private:
+            MsgpackSocket _socket;
 
-    void onRead()
-    {
-        InputStream input = _connection;
+            size_t getBufferSizeForStream(InputStream input)
+            {
+                //Cast the leastSize down if we are on a non-64bit platform
+                auto size = cast(size_t) input.leastSize;
 
-        do {
-            static if (size_t.sizeof == 4)
-                auto size = cast(uint)input.leastSize;
-            else
-                auto size = input.leastSize;
-            if (size > 0) {
-                ubyte[] data = new ubyte[](size);
+                //Overflow protection: If ulong is casted to a smaller size_t
+                //and the result is zero, read the maximum possible amount of bytes
+                static if (size_t.sizeof < typeof(input.leastSize).sizeof)
+                    if (!size)
+                        size = size_t.max;
 
-                input.read(data);
-                proccessRequest(data);
-                //if (!_connection.waitForData(dur!"seconds"(10)))
-                //    break;
+                return size;
             }
-        } while (_connection.connected);
-    }
 
-  private:
-    void sendMessage(ubyte[] message)
-    {
-        OutputStream output = _connection;
-        output.write(message);
-        output.flush();
-    }
 
-    void proccessRequest(const(ubyte)[] data)
-    {
-        _unpacker.feed(data);
-        foreach (ref unpacked; _unpacker) {
-            immutable msgSize = unpacked.length;
-            if (msgSize != 4 && msgSize != 3)
-                throw new Exception("Mismatched");
+        public:
+            //TODO: Can this be broken up into smaller functions?
+            int opApply(scope int delegate(ref Message) handleMessage)
+            {
+                int result;
+                auto timeoutLeft = _socket._timeout;
+                auto startTime = Clock.currTime();
+                InputStream input = _socket._connection;
 
-            immutable type = unpacked[0].as!uint;
-            switch (type) {
-            case MessageType.request:
-                onRequest(unpacked[1].as!size_t, unpacked[2].as!string, unpacked[3].via.array);
-                break;
-            case MessageType.response:
-                onResponse(unpacked[1].as!size_t, unpacked[2], unpacked[3]);
-                break;
-            case MessageType.notify:
-                onNotify(unpacked[1].as!string, unpacked[2].via.array);
-                break;
-            default:
-                throw new RPCException("Unknown message type: type = " ~ to!string(type));
+                //Preallocate a buffer of 1KB
+                ubyte[] buffer = new ubyte[](1024);
+
+                //TODO: Refactor the loop and if conditions to be nicer.
+                //      This should be much easier once waitForData() behaves
+                //      the same on all backends.
+                while(_socket._connection.connected || !_socket._connection.empty)
+                {
+                    if (!_socket._connection.dataAvailableForRead)
+                        if (timeoutLeft <= 0.msecs || !_socket._connection.waitForData(timeoutLeft))
+                            throw new TimeoutException("");
+
+                    auto size = getBufferSizeForStream(input);
+                    assert(size > 0);
+
+                    //Reallocate a bigger buffer if necessary
+                    if (buffer.length < size)
+                        buffer = new ubyte[](size);
+
+                    //Read and process the available data
+                    _socket._connection.read(buffer[0..size]);
+
+                    //Unpack the messages received so far and handle them individually
+                    _socket._unpacker.feed(buffer[0..size]);
+                    while(_socket._unpacker.execute())
+                    {
+                        auto message = _socket._unpacker.purge();
+                        result = handleMessage(message);
+                        if (result)
+                            return result;
+                    }
+                           
+                    //Adjust the timeout ticker
+                    timeoutLeft -= (Clock.currTime() - startTime);
+                }
+
+                return result;
             }
         }
+        return Reader();
     }
-}
 
-
-class ClientSocket(Client) : BaseSocket
-{
   private:
-    Client _client;
-
-  public:
-    this(TCPConnection connection, Client client)
+    void sendData(ubyte[] data)
     {
-        super(connection);
-        _client = client;
-    }
-
-    override void onRead()
-    {
-        InputStream input = _connection;
-
-        do {
-            //if (!input.dataAvailableForRead)
-            //    return;
-            static if (size_t.sizeof == 4)
-                ubyte[] data = new ubyte[](cast(uint)input.leastSize);
-            else
-                ubyte[] data = new ubyte[](input.leastSize);
-            input.read(data);
-            proccessRequest(data);
-            break;
-        } while (_connection.connected);
-    }
-
-    override void onResponse(size_t id, Value error, Value result)
-    {
-        _client.onResponse(id, error, result);
+        OutputStream output = _connection;
+        output.write(data);
+        output.flush();
     }
 }
 
-
-final class ClientTransport(Client)
+final class ClientTransport
 {
   private:
     Endpoint _endpoint;
-    Client _client;
-    ClientSocket!Client _socket;
+    MsgpackSocket _socket;
 
   public:
-    this(Client client, Endpoint endpoint)
+    this(Endpoint endpoint, Duration timeout = Duration.max)
     {
-        _client = client;
         _endpoint = endpoint;
-        _socket = new ClientSocket!Client(connectTCP(_endpoint.address, _endpoint.port), client);
+        _socket = new MsgpackSocket(connectTCP(_endpoint.address, _endpoint.port), timeout);
     }
 
-    void sendMessage(ubyte[] message, bool request = true)
+    Response send(ref Request request, Duration timeout = Duration.max)
     {
-        _socket.sendMessage(message);
-        if (request)
-            _socket.onRead();
-        else
-            getEventDriver().processEvents();  // force notify event to send
+        _socket.send(request);
+        foreach(message; _socket.readMessages())
+        {
+            //TODO: Factor out the message parsing and implement proper async.
+            //      Vibe.d's tasks and TaskCondition should be enough to do this.
+            auto response = message.parseResponse();
+            return response;
+        }
+
+        //This should never be reached.
+        throw new Error("No response received");
+    }
+
+    void send(ref Notification notification)
+    {
+        _socket.send(notification);
     }
 
     void close()
@@ -174,52 +180,64 @@ final class ClientTransport(Client)
     }
 }
 
-
-class ServerSocket(Server) : BaseSocket
-{
-  private:
-    Server _server;
-
-  public:
-    this(TCPConnection connection, Server server)
-    {
-        super(connection);
-        _server = server;
-    }
-
-    override void onRequest(size_t id, string method, Value[] params)
-    {
-        _server.onRequest(this, id, method, params);
-    }
-
-    override void onNotify(string method, Value[] params)
-    {
-        _server.onNotify(method, params);
-    }
-}
-
-
 final class ServerTransport(Server)
 {
   private:
     Endpoint _endpoint;
+    Duration _timeout;
 
   public:
-    this(Endpoint endpoint)
+    this(Endpoint endpoint, Duration timeout = Duration.max)
     {
         _endpoint = endpoint;
+        _timeout = timeout;
     }
 
     void listen(Server server)
     {
         auto callback = (TCPConnection conn) {
-            auto socket = new ServerSocket!Server(conn, server);
-            socket.onRead();
+            auto socket = new MsgpackSocket(conn,_timeout);
+
+            try
+            {
+                foreach(message; socket.readMessages())
+                    handleMessage(server, socket, message);
+            }
+            catch (TimeoutException e)
+            {
+                conn.close();
+            }
         };
         listenTCP(_endpoint.port, callback, _endpoint.address);
     }
 
     void close()
     {
+    }
+
+private:
+    void handleMessage(Server server, MsgpackSocket socket, ref Message message)
+    {
+        auto messageType = message.parseType();
+        switch (messageType)
+        {
+        case MessageType.request:
+            {
+                auto request = message.parseRequest();
+                auto response = server.onRequest(socket, request.id, request.method, request.parameters);
+                socket.send(response);
+            }
+            break;
+
+        case MessageType.notify:
+            {
+                auto notify = message.parseNotification();
+                server.onNotify(notify.method, notify.parameters);
+            }
+            break;
+
+        default:
+            throw new RPCException("Unexpected message type: " ~ messageType.to!string);
+        }
     }
 }
