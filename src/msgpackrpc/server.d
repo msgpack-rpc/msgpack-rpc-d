@@ -62,9 +62,9 @@ class Server(alias T, alias Protocol)
         Response response;
         response.id = request.id;
         try {
-            response.result = dispatch(request.method, request.params);
+            response.result = dispatch(request.method, request.parameters);
         } catch (Exception e) {
-            response.error = e.msg;
+            response.error = Value(e.msg);
         }
         return response;
     }
@@ -72,7 +72,7 @@ class Server(alias T, alias Protocol)
     void onNotify(ref Notification notification)
     {
         try {
-            dispatch(notification.method, notification.params);
+            dispatch(notification.method, notification.parameters);
         } catch (Exception e) { }  // Notify doesn't return the error;
     }
 

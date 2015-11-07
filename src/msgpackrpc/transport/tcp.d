@@ -224,7 +224,7 @@ private:
         case MessageType.request:
             {
                 auto request = message.parseRequest();
-                auto response = server.onRequest(socket, request.id, request.method, request.parameters);
+                auto response = server.onRequest(request);
                 socket.send(response);
             }
             break;
@@ -232,7 +232,7 @@ private:
         case MessageType.notify:
             {
                 auto notify = message.parseNotification();
-                server.onNotify(notify.method, notify.parameters);
+                server.onNotify(notify);
             }
             break;
 

@@ -42,17 +42,17 @@ class Client(alias Protocol)
         Request request;
         request.id = ++_generator;
         request.method = method;
-        request.parameters = Value[](args.length);
+        request.parameters = new Value[](args.length);
 
         foreach(size_t i, argument; args)
-            request[i] = Value(argument);
+            request.parameters[i] = Value(argument);
 
         auto response = _transport.send(request);
 
-        if (response.error)
+        if (response.error.type != Value.Type.nil)
             RPCException.rethrow(response.error);
-        else
-            return response.result.as!T;
+
+        return response.result.as!T;
     }
 
     void notify(Args...)(string method, Args args)
