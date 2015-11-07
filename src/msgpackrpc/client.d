@@ -27,7 +27,12 @@ class Client(alias Protocol)
     IDGenerater _generator;
 
   public:
-    this(Endpoint endpoint, Duration timeout = Duration.max)
+    this(Endpoint endpoint)
+    {
+        _transport = new Transport(endpoint);
+    }
+
+    this(Endpoint endpoint, Duration timeout)
     {
         _transport = new Transport(endpoint, timeout);
     }
@@ -39,28 +44,29 @@ class Client(alias Protocol)
 
     T call(T, Args...)(string method, Args args)
     {
-        Request request;
-        request.id = ++_generator;
-        request.method = method;
-        request.parameters = new Value[](args.length);
+        auto id = ++_generator;
+        auto packer = packer(Appender!(ubyte[])());       
+        packer.beginArray(4).pack(MessageType.request, id, method).packArray(args);
 
-        foreach(size_t i, argument; args)
-            request.parameters[i] = Value(argument);
+        Value error, result;
+        _transport.sendMessage(packer.stream.data, (ref Response response) {
+                if (response.error.type != Value.Type.nil)
+                    error = response.error;
+                else
+                    result = response.result;
+            });
 
-        auto response = _transport.send(request);
+        if (error.type != Value.Type.nil)
+            RPCException.rethrow(error);
 
-        if (response.error.type != Value.Type.nil)
-            RPCException.rethrow(response.error);
-
-        return response.result.as!T;
+        return result.as!T;
     }
 
     void notify(Args...)(string method, Args args)
     {
         auto packer = packer(Appender!(ubyte[])());
-
         packer.beginArray(3).pack(MessageType.notify, method).packArray(args);
-        _transport.sendMessage(packer.stream.data, false);
+        _transport.sendMessage(packer.stream.data);
     }
 }
 

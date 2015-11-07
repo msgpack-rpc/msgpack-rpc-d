@@ -26,17 +26,27 @@ class TimeoutException: RPCException
 
 class MsgpackSocket
 {
-  private:
-    Duration      _timeout;
+private:
     TCPConnection _connection;
     StreamingUnpacker _unpacker;
+    Duration _timeout;
+    bool     _closeOnTimeout;
 
   public:
-    this(TCPConnection connection, Duration timeout = Duration.max)
+    this(TCPConnection connection)
+    {
+        _connection = connection;
+        _unpacker = StreamingUnpacker([], 2048);
+        _timeout = 3000.seconds;
+        _closeOnTimeout = false;
+    }
+
+    this(TCPConnection connection, Duration timeout)
     {
         _connection = connection;
         _unpacker = StreamingUnpacker([], 2048);
         _timeout = timeout;
+        _closeOnTimeout = true;
     }
 
     void close()
@@ -44,19 +54,11 @@ class MsgpackSocket
         _connection.close();
     }
 
-    void send(ref Request request)
+    void sendData(const ubyte[] data)
     {
-        sendData(request.serialize());
-    }
-
-    void send(ref Response response)
-    {
-        sendData(response.serialize());
-    }
-
-    void send(ref Notification notification)
-    {
-        sendData(notification.serialize());
+        OutputStream output = _connection;
+        output.write(data);
+        output.flush();
     }
 
     auto readMessages()
@@ -105,7 +107,8 @@ class MsgpackSocket
                 {
                     if (!_socket._connection.dataAvailableForRead)
                         if (timeoutLeft <= 0.msecs || !_socket._connection.waitForData(timeoutLeft))
-                            throw new TimeoutException("");
+                            if (_socket._closeOnTimeout)
+                                throw new TimeoutException("");
 
                     auto size = getBufferSizeForStream(input);
                     assert(size > 0);
@@ -128,21 +131,14 @@ class MsgpackSocket
                     }
                            
                     //Adjust the timeout ticker
-                    timeoutLeft -= (Clock.currTime() - startTime);
+                    if (_socket._closeOnTimeout)
+                        timeoutLeft -= (Clock.currTime() - startTime);
                 }
 
                 return result;
             }
         }
         return Reader(this);
-    }
-
-  private:
-    void sendData(ubyte[] data)
-    {
-        OutputStream output = _connection;
-        output.write(data);
-        output.flush();
     }
 }
 
@@ -153,30 +149,35 @@ final class ClientTransport
     MsgpackSocket _socket;
 
   public:
-    this(Endpoint endpoint, Duration timeout = Duration.max)
+    this(Endpoint endpoint)
+    {
+        _endpoint = endpoint;
+        _socket = new MsgpackSocket(connectTCP(_endpoint.address, _endpoint.port));
+    }
+
+    this(Endpoint endpoint, Duration timeout)
     {
         _endpoint = endpoint;
         _socket = new MsgpackSocket(connectTCP(_endpoint.address, _endpoint.port), timeout);
     }
 
-    Response send(ref Request request, Duration timeout = Duration.max)
+    void sendMessage(const ubyte[] data, scope void delegate(ref Response) handleResponse = null)
     {
-        _socket.send(request);
-        foreach(message; _socket.readMessages())
+        _socket.sendData(data);
+        if (handleResponse !is null)
         {
-            //TODO: Factor out the message parsing and implement proper async.
-            //      Vibe.d's tasks and TaskCondition should be enough to do this.
-            auto response = message.parseResponse();
-            return response;
+            foreach(message; _socket.readMessages())
+            {
+                //TODO: Factor out the message parsing and implement proper async.
+                //      Vibe.d's tasks and TaskCondition should be enough to do this.
+                auto response = message.parseResponse();
+                handleResponse(response);
+                return;
+            }
+
+            //This should never be reached.
+            throw new Error("No response received");
         }
-
-        //This should never be reached.
-        throw new Error("No response received");
-    }
-
-    void send(ref Notification notification)
-    {
-        _socket.send(notification);
     }
 
     void close()
@@ -190,27 +191,33 @@ final class ServerTransport(Server)
   private:
     Endpoint _endpoint;
     Duration _timeout;
+    bool     _useTimeout = false;
 
   public:
-    this(Endpoint endpoint, Duration timeout = Duration.max)
+    this(Endpoint endpoint)
+    {
+        _endpoint = endpoint;
+    }
+
+    this(Endpoint endpoint, Duration timeout)
     {
         _endpoint = endpoint;
         _timeout = timeout;
+        _useTimeout = true;
     }
 
     void listen(Server server)
     {
-        auto callback = (TCPConnection conn) {
-            auto socket = new MsgpackSocket(conn,_timeout);
-
+        auto callback = (TCPConnection connection) {
             try
             {
+                auto socket = createSocket(connection);
                 foreach(message; socket.readMessages())
                     handleMessage(server, socket, message);
             }
             catch (TimeoutException e)
             {
-                conn.close();
+                connection.close();
             }
         };
         listenTCP(_endpoint.port, callback, _endpoint.address);
@@ -221,6 +228,14 @@ final class ServerTransport(Server)
     }
 
 private:
+    MsgpackSocket createSocket(TCPConnection connection)
+    {
+        if (_useTimeout)
+            return new MsgpackSocket(connection,_timeout);
+        else
+            return new MsgpackSocket(connection);
+    }
+
     void handleMessage(Server server, MsgpackSocket socket, ref Message message)
     {
         auto messageType = message.parseType();
@@ -230,7 +245,7 @@ private:
             {
                 auto request = message.parseRequest();
                 auto response = server.onRequest(request);
-                socket.send(response);
+                socket.sendData(response.serialize());
             }
             break;
 

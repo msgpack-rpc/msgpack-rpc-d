@@ -46,8 +46,9 @@ struct Request
 
     this(ref Message message)
     {
-        enforce(message.parseType == MessageType.request);
-        enforce(message.length == 4);
+        MessageType t = message.parseType();
+        enforce(t == MessageType.request, "A parsed request was didn't contain the expected message type.");
+        enforce(message.length == 4,  "A parsed request was didn't contain the expected number of values.");
 
         id = message[1].as!size_t;
         method = message[2].as!string;
@@ -73,8 +74,10 @@ struct Response
 
     this(ref Message message)
     {
-        enforce(message.parseType == MessageType.response);
-        enforce(message.length == 4);
+        MessageType t = message.parseType();
+        size_t l = message.length;
+        enforce(t == MessageType.response, "A parsed response was didn't contain the expected message type.");
+        enforce(message.length == 4, "A parsed response was didn't contain the expected number of values.");
         id = message[1].as!size_t;
         error = message[2];
         result = message[3];
@@ -83,8 +86,8 @@ struct Response
     auto serialize()
     {
         auto packer = packer(Appender!(ubyte[])());
-        packer.beginArray(3)
-              .pack(MessageType.response, error, result);
+        packer.beginArray(4)
+              .pack(MessageType.response, id, error, result);
         return packer.stream.data;
     }
 }
@@ -97,8 +100,9 @@ struct Notification
 
     this(ref Message message)
     {
-        enforce(message.parseType == MessageType.notify);
-        enforce(message.length == 3);
+        MessageType t = message.parseType();
+        enforce(t == MessageType.notify, "A parsed notification was didn't contain the expected message type.");
+        enforce(message.length == 3,  "A parsed notification was didn't contain the expected number of values.");
         method = message[1].as!string;
         parameters = message[2].via.array;
     }
