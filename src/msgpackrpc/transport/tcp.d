@@ -58,6 +58,9 @@ abstract class BaseSocket
         InputStream input = _connection;
 
         do {
+
+            import std.datetime;
+            _connection.waitForData(dur!"seconds"(1));
             static if (size_t.sizeof == 4)
                 auto size = cast(uint)input.leastSize;
             else
@@ -163,9 +166,14 @@ final class ClientTransport(Client)
     {
         _socket.sendMessage(message);
         if (request)
-            _socket.onRead();
+        {
+            import  vibe.core.core;
+            runTask({ _socket.onRead(); });
+        }
         else
+        {
             getEventDriver().processEvents();  // force notify event to send
+        }
     }
 
     void close()

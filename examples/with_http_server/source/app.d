@@ -9,6 +9,17 @@ void test(HTTPServerRequest req, HTTPServerResponse res)
     res.writeBody("enhanced Result: " ~ enhanced ~ "\n");
 }
 
+
+
+void testTimeout(HTTPServerRequest req, HTTPServerResponse res)
+{
+    string enhanceme = req.query.get("enhanceme", "D");
+    auto client = new TCPClient(Endpoint(18800, "127.0.0.1"), dur!"msecs"(100));
+    auto rpcres = client.call!string("sleep", 10);
+    auto rpcres2 = client.call!string("sleep", 1000);
+    res.writeBody("result 1: " ~ rpcres ~ "\n result 2: " ~ rpcres2 ~ "\n");
+}
+
 static void main()
 {
 
@@ -16,6 +27,8 @@ static void main()
 
     auto router = new URLRouter;
     router.get("/", &test);
+
+    router.get("/timeout.txt", &testTimeout);
 
     //set webserver config
     auto settings = new HTTPServerSettings;
