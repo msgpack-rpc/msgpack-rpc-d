@@ -33,6 +33,11 @@ class Client(alias Protocol)
         _transport = new Transport(this, endpoint);
     }
 
+    this(string endpoint)
+    {
+        _transport = new Transport(this, Endpoint(endpoint));
+    }
+
     void close()
     {
         _transport.close();
