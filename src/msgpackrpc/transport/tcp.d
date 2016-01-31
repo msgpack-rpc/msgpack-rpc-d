@@ -111,7 +111,8 @@ private:
                                 throw new TimeoutException("");
 
                     auto size = getBufferSizeForStream(input);
-                    assert(size > 0);
+                    //if (size < 1)
+                      //  return result;
 
                     //Reallocate a bigger buffer if necessary
                     if (buffer.length < size)
