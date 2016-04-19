@@ -37,6 +37,11 @@ class Client(alias Protocol)
         _transport = new Transport(endpoint, timeout);
     }
 
+    this(string endpoint)
+    {
+        _transport = new Transport(this, Endpoint(endpoint));
+    }
+
     void close()
     {
         _transport.close();

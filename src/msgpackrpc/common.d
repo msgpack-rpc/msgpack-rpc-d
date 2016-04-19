@@ -125,8 +125,30 @@ struct Endpoint
 {
     ushort port;
     string address;
+
+    this(ushort port, string address)
+    {
+        this.port = port;
+        this.address = address;
+    }
+
+    this(string connectionString)
+    {
+        import std.array;
+        auto splitted = connectionString.split(":");
+        this.address = splitted[0];
+        import std.conv;
+        this.port = splitted[1].to!ushort;
+    }
+
 }
 
+unittest
+{
+    auto e = Endpoint("127.0.0.1:18800");
+    assert(e.port = 18800);
+    assert(e.address = "127.0.0.1");
+}
 /**
  * Base exception for RPC error hierarchy
  */
