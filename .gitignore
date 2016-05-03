@@ -4,3 +4,5 @@ dub.selections.json
 *.o
 .dub
 untitled.sublime-project
+
+__test__default__

@@ -5,8 +5,6 @@
     "homepage":    "https://github.com/msgpack-rpc/msgpack-rpc-d",
     "license":     "Boost Software License, Version 1.0",
     "copyright":   "Copyright (c) 2013- Masahiro Nakagawa",
-
-    "importPaths": ["src"],
     "targetType":  "library",
     "dependencies": { 
         "msgpack-d": ">=0.9.6",

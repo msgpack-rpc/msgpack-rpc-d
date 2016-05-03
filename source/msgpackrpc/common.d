@@ -146,8 +146,8 @@ struct Endpoint
 unittest
 {
     auto e = Endpoint("127.0.0.1:18800");
-    assert(e.port = 18800);
-    assert(e.address = "127.0.0.1");
+    assert(e.port == 18800);
+    assert(e.address == "127.0.0.1");
 }
 /**
  * Base exception for RPC error hierarchy

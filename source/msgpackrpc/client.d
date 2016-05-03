@@ -39,7 +39,7 @@ class Client(alias Protocol)
 
     this(string endpoint)
     {
-        _transport = new Transport(this, Endpoint(endpoint));
+        this(Endpoint(endpoint));
     }
 
     void close()
