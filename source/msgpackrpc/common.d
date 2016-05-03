@@ -11,7 +11,6 @@ import vibe.vibe;
 import std.conv;
 import std.exception;
 
-
 /**
  * See: http://wiki.msgpack.org/display/MSGPACK/RPC+specification#RPCspecification-MessagePackRPCProtocolspecification
  */
@@ -64,6 +63,7 @@ struct Request
         return packer.stream.data;
     }
 }
+
 Request parseRequest(ref Message message) { return Request(message); }
 
 struct Response
@@ -91,6 +91,7 @@ struct Response
         return packer.stream.data;
     }
 }
+
 Response parseResponse(ref Message message) { return Response(message); }
 
 struct Notification
@@ -116,10 +117,8 @@ struct Notification
         return packer.stream.data;
     }
 }
+
 Notification parseNotification(ref Message message) { return Notification(message); }
-
-
-
 
 struct Endpoint
 {
@@ -149,6 +148,7 @@ unittest
     assert(e.port == 18800);
     assert(e.address == "127.0.0.1");
 }
+
 /**
  * Base exception for RPC error hierarchy
  */
