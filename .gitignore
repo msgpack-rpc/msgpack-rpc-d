@@ -2,3 +2,5 @@
 dub.selections.json
 *.so
 *.o
+.dub
+untitled.sublime-project
