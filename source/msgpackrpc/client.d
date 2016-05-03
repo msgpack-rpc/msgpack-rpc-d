@@ -14,7 +14,6 @@ import vibe.vibe;
 import std.array;
 import std.traits;
 
-
 /**
  * MessagePack RPC Client
  */

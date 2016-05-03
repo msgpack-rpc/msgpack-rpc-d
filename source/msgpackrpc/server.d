@@ -12,7 +12,6 @@ import vibe.vibe;
 
 import std.traits;
 
-
 /**
  * MessagePack RPC Server serves Object or module based dispacher
  */
@@ -95,7 +94,6 @@ class Server(alias T, alias Protocol)
         return result;
     }
 }
-
 
 template TCPServer(alias T)
 {
