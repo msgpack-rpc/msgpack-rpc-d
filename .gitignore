@@ -1,0 +1,16 @@
+*.a
+dub.selections.json
+*.so
+*.o
+.dub
+untitled.sublime-project
+
+__test__default__
+
+examples/simple_example/simple_example
+
+examples/with_http_server/with_http_server
+
+examples/ping_pong_server/ping_pong_server
+
+examples/ping_pong_client/ping_pong_client

@@ -12,7 +12,6 @@ import vibe.vibe;
 
 import std.traits;
 
-
 /**
  * MessagePack RPC Server serves Object or module based dispacher
  */
@@ -21,7 +20,6 @@ class Server(alias T, alias Protocol)
   private:
     enum ModuleDispatcher = T.stringof.startsWith("module ");
 
-    alias Protocol.ServerSocket!(typeof(this)) Socket;
     alias Protocol.ServerTransport!(typeof(this)) Transport;
 
     Transport[] _transports;
@@ -58,21 +56,22 @@ class Server(alias T, alias Protocol)
         {  exitEventLoop(); }
     }
 
-    void onRequest(Sender)(Sender socket, size_t id, string method, ref Value[] params)
+    Response onRequest(ref Request request)
     {
+        Response response;
+        response.id = request.id;
         try {
-            Value result = dispatch(method, params);
-            socket.sendResponse(id, null, result);
+            response.result = dispatch(request.method, request.parameters);
         } catch (Exception e) {
-            socket.sendResponse(id, e.msg, null);
-            //socket.sendMessage(MessageType.response, id, e, null);  // can't be compileds...
+            response.error = Value(e.msg);
         }
+        return response;
     }
 
-    void onNotify(string method, ref Value[] params)
+    void onNotify(ref Notification notification)
     {
         try {
-            dispatch(method, params);
+            dispatch(notification.method, notification.parameters);
         } catch (Exception e) { }  // Notify doesn't return the error;
     }
 
@@ -95,7 +94,6 @@ class Server(alias T, alias Protocol)
         return result;
     }
 }
-
 
 template TCPServer(alias T)
 {

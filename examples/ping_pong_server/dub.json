@@ -1,0 +1,16 @@
+{
+	"name": "ping_pong_server",
+    "authors": ["Ilya Yaroshenko"],
+    "dependencies": {
+        "vibe-d": "~>0.7.28",
+        "msgpack-rpc": {
+             "path": "../../",
+        },
+    },
+    "subConfigurations": {
+        "msgpack-rpc": "integrated",
+    },
+    "versions": [
+        "VibeDefaultMain",
+    ]
+}

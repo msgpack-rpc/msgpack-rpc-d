@@ -13,7 +13,6 @@ import vibe.core.net;
 
 import std.conv;
 
-
 abstract class BaseSocket
 {
   private:
@@ -82,7 +81,6 @@ abstract class BaseSocket
     }
 }
 
-
 class ServerSocket(Server) : BaseSocket
 {
   private:
@@ -125,7 +123,6 @@ class ServerSocket(Server) : BaseSocket
         }
     }
 }
-
 
 final class ServerTransport(Server)
 {
