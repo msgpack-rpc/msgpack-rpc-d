@@ -68,7 +68,7 @@ auto server = new TCPServer!(foo)();
 
   MessagePack official site
 
-* [msgpack-rpc-d repository](https://github.com/msgpack/msgpack-rpc-d)
+* [msgpack-rpc-d repository](https://github.com/msgpack-rpc/msgpack-rpc-d)
 
   Github repository
 
