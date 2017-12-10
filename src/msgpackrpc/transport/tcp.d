@@ -125,15 +125,15 @@ class ClientSocket(Client) : BaseSocket
         InputStream input = _connection;
 
         do {
-            //if (!input.dataAvailableForRead)
-            //    return;
             static if (size_t.sizeof == 4)
                 ubyte[] data = new ubyte[](cast(uint)input.leastSize);
             else
                 ubyte[] data = new ubyte[](input.leastSize);
             input.read(data);
             proccessRequest(data);
-            break;
+            // CHECKME
+            if(_unpacker.size == 0)
+                break;
         } while (_connection.connected);
     }
 
